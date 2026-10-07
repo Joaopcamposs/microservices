@@ -36,7 +36,7 @@ func TestValidateAgainstRealSchema(t *testing.T) {
 		{"campo extra", JobIOSleep, `{"ms": 1, "x": 2}`, ErrInvalidPayload},
 		{"não é objeto", JobIOSleep, `[1]`, ErrInvalidPayload},
 		{"não é JSON", JobIOSleep, `{quebrado`, ErrInvalidPayload},
-		{"tipo sem schema", JobIOFetchURLs, `{}`, ErrUnsupportedJobType},
+		{"tipo sem schema", JobPipelineFanout, `{}`, ErrUnsupportedJobType},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

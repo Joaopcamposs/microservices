@@ -4,6 +4,30 @@ Registro da evolução do código, no formato [Keep a Changelog](https://keepach
 
 ## [Não lançado]
 
+### 2026-10-07 · Fase 4: workloads nos 4 workers
+
+#### Adicionado
+- Schemas de payload `cpu.pbkdf2`, `io.fetch_urls` e `data.json_transform` em `contracts/jobs/`; os dois gateways os carregam sem mudança de código.
+- `contracts/jobs/examples.json`: vetores dourados (`payload -> resultado`) que os quatro workers usam nos testes. Por quê: é a prova de paridade entre Python e Go, sem depender de rede.
+- Handlers dos três tipos em worker-asyncio, worker-taskiq (async, CPU em `asyncio.to_thread`), worker-celery (síncrono, `ThreadPoolExecutor` no fetch) e worker-go (`crypto/pbkdf2`, uma goroutine por URL). Dependência `httpx` nos três workers Python.
+- `data.json_transform` gera os registros com um LCG de 64 bits igual nas duas linguagens, e não com `random`, para o JSON intermediário (`input_bytes`) e o resultado serem idênticos.
+- `services/mock-server` (Go, stdlib, porta 8090): `/delay/{ms}`, `/status/{code}` e `/healthz`, com teste; serviço no compose (profiles `python`, `go`, `all`); `make gofmt` e `make test` o incluem.
+- Exemplos de payload dos novos tipos no Swagger do gateway-py (`openapi_examples`) e na descrição do `POST /jobs` do gateway-go.
+- Testes de handler por worker: vetores dourados e `io.fetch_urls` contra servidor HTTP local (ordem, status, tamanho, erro de conexão).
+
+#### Alterado
+- gateway-go: o corpo do `POST /jobs` no Swagger virou `object` (o DTO `JobPayload` só descrevia `io.sleep` e foi removido); os exemplos por tipo estão na descrição. Swagger regenerado.
+- Testes dos gateways que usavam `cpu.pbkdf2`/`io.fetch_urls` como "tipo sem schema" passaram a usar `pipeline.fanout`, o único sem schema agora.
+- README: seção 6 com payloads, formato dos resultados, regras de paridade e o mock-server; estrutura do repositório e esqueleto do compose.
+
+#### Decisões
+- `io.fetch_urls` com erro de rede falha o job inteiro; status 4xx/5xx é resultado, não erro. Resultado parcial não seria comparável entre stacks.
+- `data.json_transform` gera o JSON a partir de `seed` em vez de receber 1-5 MB no payload: um payload grande mediria o broker e o `jsonb`, não a serialização do worker.
+
+#### Verificado
+- Critério da fase 4: um job de cada tipo com `target=all`, criado pelo gateway-py e pelo gateway-go, retornou `succeeded` com **resultado idêntico** nos 4 workers.
+- Payload inválido (`cpu.pbkdf2` sem `salt`/`iterations`) responde `422` com as violações.
+
 ### 2026-10-07 · Fase 3: worker-celery e worker-taskiq (bridge)
 
 #### Adicionado

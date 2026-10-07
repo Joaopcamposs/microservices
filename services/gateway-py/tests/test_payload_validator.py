@@ -35,4 +35,4 @@ def test_rejects_invalid_io_sleep_payload(validator: PayloadValidator, payload: 
 def test_rejects_type_without_schema(validator: PayloadValidator) -> None:
     """Tipo previsto no contrato mas sem schema é recusado, não aceito às cegas."""
     with pytest.raises(UnsupportedJobTypeError):
-        validator.validate(JobType.CPU_PBKDF2, {})
+        validator.validate(JobType.PIPELINE_FANOUT, {})

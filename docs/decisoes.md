@@ -15,3 +15,13 @@ Cada entrada registra uma decisão com trade-off: o que foi escolhido, o que foi
 **Validação dupla:** a bridge valida para mandar mensagem inválida à DLQ antes de gastar uma task; a task valida de novo porque é um ponto de entrada próprio do framework.
 
 **Código duplicado de propósito:** `contracts.py`, `models.py` e o repositório se repetem entre os workers Python. A regra do projeto proíbe dependência cruzada entre serviços além de `contracts/`, e cada worker precisa ser construído e medido isolado.
+
+## Jobs determinísticos e `io.fetch_urls` tolerante a status
+
+**Decisão:** o resultado de cada job precisa ser idêntico nas quatro stacks, e `contracts/jobs/examples.json` é o árbitro (todos os workers testam contra ele). Para isso, `data.json_transform` gera registros com um LCG de 64 bits próprio, e não com `random`, e `cpu.pbkdf2` fixa o algoritmo e o tamanho do digest.
+
+**Descartado:** receber 1-5 MB no payload do `data.json_transform`. O envelope passa pelo Postgres (`jsonb`) e pelo RabbitMQ, então o job mediria o transporte e não a (de)serialização do worker. Gerar a partir de `seed` isola o que o job quer medir.
+
+**`io.fetch_urls`:** status 4xx/5xx é resultado (`status` no JSON); erro de rede ou timeout falha o job inteiro. Resultado parcial dependeria da ordem de chegada e não seria comparável entre stacks. Sem redirects e com timeout de 10 s em todas.
+
+**Custo:** o gerador e a agregação existem duas vezes (Python e Go). Os vetores dourados pegam qualquer divergência.

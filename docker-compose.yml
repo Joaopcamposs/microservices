@@ -156,3 +156,11 @@ services:
       rabbitmq: { condition: service_healthy }
     restart: unless-stopped
     profiles: [go, all]
+
+  # Servidor de mock para o job io.fetch_urls: /delay/{ms} e /status/{code}. Porta 8090.
+  # Latência controlada e sem internet; alcançável pelos workers como http://mock-server:8090.
+  mock-server:
+    build: ./services/mock-server
+    ports: ["8090:8090"]
+    restart: unless-stopped
+    profiles: [python, go, all]

@@ -113,7 +113,8 @@ microservices-lab/
 │   ├── worker-celery/     # Celery + bridge
 │   ├── worker-taskiq/     # TaskIQ + bridge
 │   ├── worker-asyncio/    # aio-pika puro
-│   └── worker-go/         # goroutines + worker pool
+│   ├── worker-go/         # goroutines + worker pool
+│   └── mock-server/       # HTTP de latência controlada para o io.fetch_urls
 ├── contracts/
 │   ├── envelope.schema.json
 │   └── jobs/              # schema do payload de cada tipo de job
@@ -409,15 +410,54 @@ Conceitos de Go que você pratica aqui: goroutines, channels, `sync.WaitGroup`, 
 
 ## 6. Jobs (workloads)
 
-| Job | Tipo | O que faz | O que mede |
-|---|---|---|---|
-| `cpu.pbkdf2` | CPU-bound | PBKDF2/hash repetido N vezes | Paralelismo real, GIL, free-threading |
-| `io.fetch_urls` | I/O-bound | Busca N URLs de um mock server local | Concorrência de I/O |
-| `io.sleep` | I/O-bound puro | `sleep` de X ms | Overhead do framework/scheduler |
-| `data.json_transform` | Serialização | Parse, transformação e serialização de JSON de 1-5 MB | Custo de (de)serialização |
-| `pipeline.fanout` | Orquestração | Divide em N subjobs e agrega | Coordenação e fan-in |
+| Job | Tipo | O que faz | O que mede | Resultado (`job_results.result`) |
+|---|---|---|---|---|
+| `cpu.pbkdf2` | CPU-bound | PBKDF2-HMAC-SHA256, 32 bytes de saída | Paralelismo real, GIL, free-threading | `{"digest": "<hex>"}` |
+| `io.fetch_urls` | I/O-bound | GET concorrente de N URLs (mock-server) | Concorrência de I/O | `{"results": [{"url", "status", "bytes"}]}` na ordem recebida |
+| `io.sleep` | I/O-bound puro | `sleep` de X ms | Overhead do framework/scheduler | `{"slept_ms": N}` |
+| `data.json_transform` | Serialização | Gera, serializa, lê e agrega JSON | Custo de (de)serialização | `{"records", "input_bytes", "groups": {"gN": {"count", "sum"}}}` |
+| `pipeline.fanout` | Orquestração | Divide em N subjobs e agrega | Coordenação e fan-in | ainda não implementado (sem schema) |
 
-**Dica:** use um mock server local (um container com respostas de latência controlada) para o `io.fetch_urls`. Internet real torna o benchmark irreproduzível.
+Os schemas de payload ficam em `contracts/jobs/<tipo>.schema.json`; os dois gateways os leem, então aceitam e rejeitam os mesmos pedidos.
+
+| Job | Payload | Limites |
+|---|---|---|
+| `io.sleep` | `{"ms": 100}` | `ms` 0 a 60000 |
+| `cpu.pbkdf2` | `{"password": "senha", "salt": "sal", "iterations": 100000}` | `iterations` 1 a 5.000.000; textos até 256 caracteres |
+| `io.fetch_urls` | `{"urls": ["http://mock-server:8090/delay/200"]}` | 1 a 50 URLs `http(s)` |
+| `data.json_transform` | `{"records": 1000, "seed": 42}` | `records` 1 a 100.000; `seed` de 0 a 2^32-1 |
+
+### Regras para o resultado ser idêntico entre stacks
+
+- **`cpu.pbkdf2`:** a saída é determinística; a mesma entrada dá o mesmo `digest` em Python (`hashlib`) e Go (`crypto/pbkdf2`).
+- **`io.fetch_urls`:** GET sem seguir redirects, timeout de 10 s por URL, todas ao mesmo tempo (`asyncio.gather`, pool de threads no Celery, uma goroutine por URL). Erro de rede ou timeout em qualquer URL faz o job inteiro virar `failed`, porque um resultado parcial não seria comparável. Status 4xx/5xx **não** é erro: vira `status` no resultado.
+- **`data.json_transform`:** os registros nascem de um gerador congruencial linear de 64 bits (Knuth MMIX), implementado igual nas duas linguagens, e não de `random`. Cada registro é `{"id", "group", "value", "tag"}`; o JSON intermediário é compacto, então `input_bytes` é igual nas stacks e serve de prova. Cerca de 17 mil registros dão 1 MB.
+- **Golden vectors:** `contracts/jobs/examples.json` guarda pares `payload -> resultado esperado` (inclusive o vetor `password`/`salt`/1 iteração = `120fb6cf...`). Os quatro workers testam o handler contra o mesmo arquivo; é ele que garante a paridade. O `io.fetch_urls` fica de fora (depende de rede) e é testado em cada stack contra um servidor local.
+
+### Como cada stack executa
+
+| Stack | `cpu.pbkdf2` e `data.json_transform` | `io.fetch_urls` |
+|---|---|---|
+| asyncio e TaskIQ | `asyncio.to_thread`, para não travar o event loop | `httpx.AsyncClient` + `gather` |
+| Celery | direto no processo filho (cada um tem seu GIL) | `httpx.Client` + `ThreadPoolExecutor` |
+| Go | na goroutine do pool | `net/http` + uma goroutine por URL |
+
+### mock-server
+
+`services/mock-server` (Go, só biblioteca padrão, porta `8090`, profiles `python`, `go` e `all`). Internet real torna o benchmark irreproduzível; o mock dá latência e status controlados:
+
+- `GET /delay/{ms}`: espera `ms` (0 a 60000) e responde `200` com `{"delay_ms": N}`.
+- `GET /status/{code}`: responde na hora com o código pedido (100 a 599).
+- `GET /healthz`.
+
+Dentro do compose, use `http://mock-server:8090`. Teste pelo Swagger (`/docs` dos gateways), por exemplo:
+
+```bash
+curl -XPOST 'localhost:8000/jobs?type=io.fetch_urls&target=all' -H 'content-type: application/json' \
+  -d '{"urls": ["http://mock-server:8090/delay/200", "http://mock-server:8090/status/404"]}'
+```
+
+**Por que gerar o JSON em vez de receber 1-5 MB no payload:** o envelope trafega pelo Postgres e pelo RabbitMQ; um payload de megabytes mediria o broker e o `jsonb`, não a serialização do worker. Gerar a partir de `seed` isola o custo que o job quer medir e mantém o resultado reproduzível.
 
 ---
 
@@ -495,7 +535,7 @@ A última linha importa: o custo de desenvolvimento faz parte da resposta.
 
 ## 10. docker-compose (esqueleto)
 
-Hoje o `docker-compose.yml` do repositório tem `rabbitmq`, `postgres` e `gateway-py` (profile `python`); os demais serviços entram conforme cada fase. O build do gateway usa a raiz do repo como contexto para copiar `contracts/` para a imagem. O Postgres aplica `db/migrations/*.sql` na primeira inicialização. Para recriar o banco do zero, use `make reset`.
+Hoje o `docker-compose.yml` do repositório já tem todos os serviços das fases 0 a 4 (inclusive o `mock-server`); o esqueleto abaixo é o plano, sem os limites de recurso aplicados. O build do gateway usa a raiz do repo como contexto para copiar `contracts/` para a imagem. O Postgres aplica `db/migrations/*.sql` na primeira inicialização. Para recriar o banco do zero, use `make reset`.
 
 ```yaml
 services:
@@ -561,6 +601,11 @@ services:
     deploy: { resources: { limits: { cpus: "1", memory: 512M } } }
     depends_on: { rabbitmq: { condition: service_healthy } }
     profiles: [go, all]
+
+  mock-server:
+    build: ./services/mock-server
+    ports: ["8090:8090"]
+    profiles: [python, go, all]
 ```
 
 Comandos úteis:

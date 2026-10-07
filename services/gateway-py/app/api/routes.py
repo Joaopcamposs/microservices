@@ -16,8 +16,28 @@ router = APIRouter()
 PAYLOAD_EXAMPLES = {
     "io.sleep": {
         "summary": "io.sleep: dorme 100 ms",
-        "description": "Use com `type=io.sleep`. Único tipo com schema por enquanto.",
+        "description": "Use com `type=io.sleep`. Mede só o overhead do framework.",
         "value": {"ms": 100},
+    },
+    "cpu.pbkdf2": {
+        "summary": "cpu.pbkdf2: 100 mil iterações",
+        "description": 'Use com `type=cpu.pbkdf2`. Job CPU-bound; devolve `{"digest": ...}`.',
+        "value": {"password": "senha", "salt": "sal", "iterations": 100000},
+    },
+    "io.fetch_urls": {
+        "summary": "io.fetch_urls: 2 URLs do mock-server",
+        "description": (
+            "Use com `type=io.fetch_urls`. O `mock-server` (profiles `python`, `go`, `all`) "
+            "responde `/delay/{ms}` e `/status/{code}`."
+        ),
+        "value": {
+            "urls": ["http://mock-server:8090/delay/200", "http://mock-server:8090/status/404"]
+        },
+    },
+    "data.json_transform": {
+        "summary": "data.json_transform: 1000 registros",
+        "description": "Use com `type=data.json_transform`. Gera, serializa, lê e agrega JSON.",
+        "value": {"records": 1000, "seed": 42},
     },
 }
 

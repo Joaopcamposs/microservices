@@ -80,7 +80,7 @@ const docTemplate = `{
                 }
             },
             "post": {
-                "description": "Valida o payload contra ` + "`" + `contracts/jobs/\u003ctype\u003e.schema.json` + "`" + ` e grava o job e a outbox na mesma transação. Quem publica no RabbitMQ é o ` + "`" + `outbox-relay` + "`" + `. ` + "`" + `target=all` + "`" + ` usa fanout (4 workers); os demais, um worker só.",
+                "description": "Valida o payload contra ` + "`" + `contracts/jobs/\u003ctype\u003e.schema.json` + "`" + ` e grava o job e a outbox na mesma transação. Quem publica no RabbitMQ é o ` + "`" + `outbox-relay` + "`" + `. ` + "`" + `target=all` + "`" + ` usa fanout (4 workers); os demais, um worker só.\\n\\nExemplos de payload por tipo:\\n- ` + "`" + `io.sleep` + "`" + `: ` + "`" + `{\"ms\": 100}` + "`" + `\\n- ` + "`" + `cpu.pbkdf2` + "`" + `: ` + "`" + `{\"password\": \"senha\", \"salt\": \"sal\", \"iterations\": 100000}` + "`" + `\\n- ` + "`" + `io.fetch_urls` + "`" + `: ` + "`" + `{\"urls\": [\"http://mock-server:8090/delay/200\"]}` + "`" + ` (o mock-server sobe nos profiles ` + "`" + `python` + "`" + `, ` + "`" + `go` + "`" + ` e ` + "`" + `all` + "`" + `)\\n- ` + "`" + `data.json_transform` + "`" + `: ` + "`" + `{\"records\": 1000, \"seed\": 42}` + "`" + `",
                 "consumes": [
                     "application/json"
                 ],
@@ -122,12 +122,12 @@ const docTemplate = `{
                         "in": "query"
                     },
                     {
-                        "description": "Payload do tipo escolhido (hoje só io.sleep tem schema).",
+                        "description": "Payload do tipo escolhido (ver exemplos na descrição).",
                         "name": "payload",
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/api.JobPayload"
+                            "type": "object"
                         }
                     }
                 ],
@@ -304,16 +304,6 @@ const docTemplate = `{
                 "type": {
                     "type": "string",
                     "example": "io.sleep"
-                }
-            }
-        },
-        "api.JobPayload": {
-            "type": "object",
-            "properties": {
-                "ms": {
-                    "description": "Ms é a duração do sleep em milissegundos (0 a 60000) quando type=io.sleep.",
-                    "type": "integer",
-                    "example": 100
                 }
             }
         },

@@ -10,6 +10,7 @@ dependencies = [
     "pydantic-settings>=2.4",
     "jsonschema>=4.23",
     "prometheus-client>=0.20",
+    "httpx>=0.28.1",
 ]
 
 [dependency-groups]

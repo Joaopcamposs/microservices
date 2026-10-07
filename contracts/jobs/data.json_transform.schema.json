@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "data.json_transform",
+  "description": "Job de serialização: gera `records` registros determinísticos a partir de `seed`, serializa em JSON, faz o parse, agrega por grupo e serializa o resultado. Mede o custo de (de)serialização (1 MB ~ 17 mil registros).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["records", "seed"],
+  "properties": {
+    "records": { "type": "integer", "minimum": 1, "maximum": 100000 },
+    "seed": { "type": "integer", "minimum": 0, "maximum": 4294967295 }
+  }
+}

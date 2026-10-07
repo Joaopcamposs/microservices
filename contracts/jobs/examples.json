@@ -1,0 +1,121 @@
+{
+  "description": "Vetores dourados dos jobs determinísticos. Todo worker testa seu handler contra estes pares (paridade entre stacks). io.fetch_urls fica de fora: depende de rede e é testado com servidor local em cada stack.",
+  "examples": [
+    {
+      "type": "cpu.pbkdf2",
+      "payload": {
+        "password": "password",
+        "salt": "salt",
+        "iterations": 1
+      },
+      "expected": {
+        "digest": "120fb6cffcf8b32c43e7225256c4f837a86548c92ccc35480805987cb70be17b"
+      }
+    },
+    {
+      "type": "cpu.pbkdf2",
+      "payload": {
+        "password": "senha ção",
+        "salt": "sal",
+        "iterations": 1000
+      },
+      "expected": {
+        "digest": "2d702bef73748ba3a9bc15e26c075f242e2df74110ce0b856e11bda5ced2dba8"
+      }
+    },
+    {
+      "type": "data.json_transform",
+      "payload": {
+        "records": 1,
+        "seed": 0
+      },
+      "expected": {
+        "records": 1,
+        "input_bytes": 54,
+        "groups": {
+          "g15": {
+            "count": 1,
+            "sum": 96424
+          }
+        }
+      }
+    },
+    {
+      "type": "data.json_transform",
+      "payload": {
+        "records": 500,
+        "seed": 42
+      },
+      "expected": {
+        "records": 500,
+        "input_bytes": 27009,
+        "groups": {
+          "g0": {
+            "count": 31,
+            "sum": 1747471
+          },
+          "g1": {
+            "count": 30,
+            "sum": 1414557
+          },
+          "g10": {
+            "count": 21,
+            "sum": 1096439
+          },
+          "g11": {
+            "count": 26,
+            "sum": 1435031
+          },
+          "g12": {
+            "count": 42,
+            "sum": 1927075
+          },
+          "g13": {
+            "count": 25,
+            "sum": 1394323
+          },
+          "g14": {
+            "count": 29,
+            "sum": 1462327
+          },
+          "g15": {
+            "count": 33,
+            "sum": 1360246
+          },
+          "g2": {
+            "count": 36,
+            "sum": 1474067
+          },
+          "g3": {
+            "count": 25,
+            "sum": 1459866
+          },
+          "g4": {
+            "count": 38,
+            "sum": 1746953
+          },
+          "g5": {
+            "count": 38,
+            "sum": 1550256
+          },
+          "g6": {
+            "count": 22,
+            "sum": 1104052
+          },
+          "g7": {
+            "count": 32,
+            "sum": 1728865
+          },
+          "g8": {
+            "count": 35,
+            "sum": 1796600
+          },
+          "g9": {
+            "count": 37,
+            "sum": 1614369
+          }
+        }
+      }
+    }
+  ]
+}

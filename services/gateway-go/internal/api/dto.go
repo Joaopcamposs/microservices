@@ -9,14 +9,6 @@ import (
 	"microservices-lab/gateway-go/internal/domain"
 )
 
-// JobPayload documenta o corpo de POST /jobs para o Swagger. O corpo real é validado contra
-// contracts/jobs/<type>.schema.json; este tipo mostra o único schema existente (io.sleep) para
-// o "Try it out" já vir preenchido.
-type JobPayload struct {
-	// Ms é a duração do sleep em milissegundos (0 a 60000) quando type=io.sleep.
-	Ms int `json:"ms" example:"100"`
-}
-
 // JobAccepted é a resposta 202 do POST /jobs: só o identificador para consultar depois.
 type JobAccepted struct {
 	JobID string `json:"job_id" example:"7c9e6679-7425-40de-944b-e07fc1f90ae7"`

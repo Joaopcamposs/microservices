@@ -34,13 +34,13 @@ func fail(c *gin.Context, status int, detail string) {
 // SubmitJob recebe o pedido, delega ao serviço e responde 202 com o job_id.
 //
 //	@Summary		Enfileira um job
-//	@Description	Valida o payload contra `contracts/jobs/<type>.schema.json` e grava o job e a outbox na mesma transação. Quem publica no RabbitMQ é o `outbox-relay`. `target=all` usa fanout (4 workers); os demais, um worker só.
+//	@Description	Valida o payload contra `contracts/jobs/<type>.schema.json` e grava o job e a outbox na mesma transação. Quem publica no RabbitMQ é o `outbox-relay`. `target=all` usa fanout (4 workers); os demais, um worker só.\n\nExemplos de payload por tipo:\n- `io.sleep`: `{"ms": 100}`\n- `cpu.pbkdf2`: `{"password": "senha", "salt": "sal", "iterations": 100000}`\n- `io.fetch_urls`: `{"urls": ["http://mock-server:8090/delay/200"]}` (o mock-server sobe nos profiles `python`, `go` e `all`)\n- `data.json_transform`: `{"records": 1000, "seed": 42}`
 //	@Tags			jobs
 //	@Accept			json
 //	@Produce		json
 //	@Param			type	query		string		true	"Tipo do job."	Enums(io.sleep, io.fetch_urls, cpu.pbkdf2, data.json_transform, pipeline.fanout)	default(io.sleep)
 //	@Param			target	query		string		false	"Stack que processa o job."	Enums(all, celery, taskiq, asyncio, go)	default(all)
-//	@Param			payload	body		JobPayload	true	"Payload do tipo escolhido (hoje só io.sleep tem schema)."
+//	@Param			payload	body		object	true	"Payload do tipo escolhido (ver exemplos na descrição)."
 //	@Success		202		{object}	JobAccepted
 //	@Failure		422		{object}	ErrorBody
 //	@Router			/jobs [post]

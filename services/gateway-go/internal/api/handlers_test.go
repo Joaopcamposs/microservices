@@ -67,7 +67,7 @@ func TestSubmitJobStatusCodes(t *testing.T) {
 		{"tipo desconhecido", "/jobs?type=nada", `{}`, 422, 0},
 		{"tipo ausente", "/jobs", `{"ms": 10}`, 422, 0},
 		{"target inválido", "/jobs?type=io.sleep&target=java", `{"ms": 10}`, 422, 0},
-		{"tipo sem schema", "/jobs?type=cpu.pbkdf2", `{}`, 422, 0},
+		{"tipo sem schema", "/jobs?type=pipeline.fanout", `{}`, 422, 0},
 		{"corpo vazio", "/jobs?type=io.sleep", ``, 422, 0},
 	}
 	for _, tc := range cases {

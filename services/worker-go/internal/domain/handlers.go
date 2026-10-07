@@ -15,7 +15,12 @@ type Handler func(ctx context.Context, payload json.RawMessage) (json.RawMessage
 // como processá-lo). Handler CPU-bound novo roda na própria goroutine do pool: o scheduler do
 // Go distribui entre os núcleos, sem o cuidado de `to_thread` que o worker Python exige.
 func NewHandlers() map[JobType]Handler {
-	return map[JobType]Handler{JobIOSleep: handleIOSleep}
+	return map[JobType]Handler{
+		JobIOSleep:           handleIOSleep,
+		JobCPUPBKDF2:         handleCPUPBKDF2,
+		JobIOFetchURLs:       handleIOFetchURLs,
+		JobDataJSONTransform: handleDataJSONTransform,
+	}
 }
 
 // handleIOSleep dorme `ms` milissegundos sem ocupar uma thread do SO (a goroutine é

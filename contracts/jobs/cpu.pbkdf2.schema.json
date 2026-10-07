@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "cpu.pbkdf2",
+  "description": "Job CPU-bound: PBKDF2-HMAC-SHA256 com 32 bytes de saída. Mede paralelismo real (GIL, free-threading).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["password", "salt", "iterations"],
+  "properties": {
+    "password": { "type": "string", "maxLength": 256 },
+    "salt": { "type": "string", "maxLength": 256 },
+    "iterations": { "type": "integer", "minimum": 1, "maximum": 5000000 }
+  }
+}
