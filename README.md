@@ -79,6 +79,19 @@ Consequências:
 - **O broker fora do ar não derruba o `POST /jobs`:** o gateway continua respondendo `202` e a outbox acumula até o RabbitMQ voltar.
 - **Um único relay para os dois gateways:** a lógica de publicação não é duplicada em Python e Go, e os gateways ficam equivalentes por construção.
 
+### Topologia do RabbitMQ
+
+Declarada em `infra/rabbitmq/definitions.json` e carregada no boot do broker, então nenhum serviço precisa criar filas:
+
+| Item | Tipo | Função |
+|---|---|---|
+| `jobs` | exchange fanout | `target=all`: entrega o job às 4 filas |
+| `jobs.direct` | exchange direct | `target=<stack>`: routing key = nome da stack |
+| `jobs.celery`, `jobs.taskiq`, `jobs.asyncio`, `jobs.go` | filas duráveis | uma por worker, ligadas aos dois exchanges |
+| `jobs.dlx` → `jobs.dlq` | exchange fanout + fila | destino de mensagens rejeitadas (`nack` sem requeue) |
+
+O relay publica em `jobs` quando `outbox.routing_key` é vazia e em `jobs.direct` quando preenchida.
+
 ### Por que fanout?
 
 O mesmo job chega aos 4 workers ao mesmo tempo. Isso dá uma comparação direta e justa: mesma entrada, mesmo instante, quatro implementações.
@@ -107,6 +120,7 @@ microservices-lab/
 ├── db/
 │   └── migrations/        # jobs, job_results e outbox (SQL puro, compartilhado)
 ├── infra/
+│   ├── rabbitmq/          # definitions.json: exchanges, filas, bindings e DLQ
 │   ├── otel-collector.yaml
 │   ├── grafana/
 │   └── prometheus.yml
@@ -200,7 +214,24 @@ Trade-off: é artificial (um hop a mais), mas mantém o contrato único. A alter
 
 - `POST /jobs?type=...&target=all|celery|taskiq|asyncio|go`: valida, cria o envelope, grava `jobs` + `outbox` na mesma transação (sem falar com o RabbitMQ) e retorna `202` com `job_id`.
 - `GET /jobs/{job_id}`: consulta os resultados por worker no Postgres.
-- `GET /healthz` e `/metrics`.
+- `GET /jobs?limit=20`: jobs mais recentes, para achar `job_id`s.
+- `GET /outbox?state=pending|published|all`: inspeciona a outbox (aba `debug`), para conferir se o job saiu do gateway e se o relay está esvaziando.
+- `GET /healthz` (verifica o Postgres) e `/metrics` (Prometheus).
+
+**Swagger:** `http://localhost:8000/docs` é a interface de teste. Os endpoints têm descrição, tags e exemplo de payload pronto para o botão "Try it out".
+
+O corpo do `POST` é o `payload` do job (JSON), validado contra `contracts/jobs/<type>.schema.json`. Tipo sem schema ou payload inválido retorna `422`. O `GET` devolve `status` agregado: `pending` (nenhum resultado), `running` (parcial) ou `completed` (4 resultados no `target=all`, 1 nos demais).
+
+Código em `services/gateway-py/app`: `api/` (rotas), `services/` (caso de uso e `Services`, dono do estado de processo criado no `lifespan`), `domain/` (envelope, validador de payload) e `infra/` (repositório Postgres). O `traceparent` é gerado localmente por enquanto; passa a vir do span OpenTelemetry na fase 5.
+
+Uso local (com `make up` rodando):
+
+```bash
+make run     # uvicorn com reload em :8000
+curl -XPOST 'localhost:8000/jobs?type=io.sleep&target=go' -H 'content-type: application/json' -d '{"ms": 100}'
+curl localhost:8000/jobs/<job_id>
+make test    # inclui integração com o Postgres; pula se o banco estiver fora
+```
 
 ### 5.2 gateway-go (Gin)
 
@@ -452,6 +483,8 @@ A última linha importa: o custo de desenvolvimento faz parte da resposta.
 
 ## 10. docker-compose (esqueleto)
 
+Hoje o `docker-compose.yml` do repositório tem `rabbitmq`, `postgres` e `gateway-py` (profile `python`); os demais serviços entram conforme cada fase. O build do gateway usa a raiz do repo como contexto para copiar `contracts/` para a imagem. O Postgres aplica `db/migrations/*.sql` na primeira inicialização. Para recriar o banco do zero, use `make reset`.
+
 ```yaml
 services:
   rabbitmq:
@@ -480,7 +513,7 @@ services:
     profiles: [python, go, all]        # sempre presente: os dois gateways dependem dele
 
   gateway-py:
-    build: ./services/gateway-py       # python:3.12-slim
+    build: { context: ., dockerfile: services/gateway-py/Dockerfile }   # python:3.13-slim
     ports: ["8000:8000"]
     depends_on: { postgres: { condition: service_healthy } }
     profiles: [python, all]

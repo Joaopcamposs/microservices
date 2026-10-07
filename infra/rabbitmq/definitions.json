@@ -1,0 +1,155 @@
+{
+  "vhosts": [
+    {
+      "name": "/"
+    }
+  ],
+  "exchanges": [
+    {
+      "name": "jobs",
+      "vhost": "/",
+      "type": "fanout",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "name": "jobs.direct",
+      "vhost": "/",
+      "type": "direct",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    },
+    {
+      "name": "jobs.dlx",
+      "vhost": "/",
+      "type": "fanout",
+      "durable": true,
+      "auto_delete": false,
+      "internal": false,
+      "arguments": {}
+    }
+  ],
+  "queues": [
+    {
+      "name": "jobs.celery",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "jobs.dlx"
+      }
+    },
+    {
+      "name": "jobs.taskiq",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "jobs.dlx"
+      }
+    },
+    {
+      "name": "jobs.asyncio",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "jobs.dlx"
+      }
+    },
+    {
+      "name": "jobs.go",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {
+        "x-dead-letter-exchange": "jobs.dlx"
+      }
+    },
+    {
+      "name": "jobs.dlq",
+      "vhost": "/",
+      "durable": true,
+      "auto_delete": false,
+      "arguments": {}
+    }
+  ],
+  "bindings": [
+    {
+      "source": "jobs",
+      "vhost": "/",
+      "destination": "jobs.celery",
+      "destination_type": "queue",
+      "routing_key": "",
+      "arguments": {}
+    },
+    {
+      "source": "jobs",
+      "vhost": "/",
+      "destination": "jobs.taskiq",
+      "destination_type": "queue",
+      "routing_key": "",
+      "arguments": {}
+    },
+    {
+      "source": "jobs",
+      "vhost": "/",
+      "destination": "jobs.asyncio",
+      "destination_type": "queue",
+      "routing_key": "",
+      "arguments": {}
+    },
+    {
+      "source": "jobs",
+      "vhost": "/",
+      "destination": "jobs.go",
+      "destination_type": "queue",
+      "routing_key": "",
+      "arguments": {}
+    },
+    {
+      "source": "jobs.direct",
+      "vhost": "/",
+      "destination": "jobs.celery",
+      "destination_type": "queue",
+      "routing_key": "celery",
+      "arguments": {}
+    },
+    {
+      "source": "jobs.direct",
+      "vhost": "/",
+      "destination": "jobs.taskiq",
+      "destination_type": "queue",
+      "routing_key": "taskiq",
+      "arguments": {}
+    },
+    {
+      "source": "jobs.direct",
+      "vhost": "/",
+      "destination": "jobs.asyncio",
+      "destination_type": "queue",
+      "routing_key": "asyncio",
+      "arguments": {}
+    },
+    {
+      "source": "jobs.direct",
+      "vhost": "/",
+      "destination": "jobs.go",
+      "destination_type": "queue",
+      "routing_key": "go",
+      "arguments": {}
+    },
+    {
+      "source": "jobs.dlx",
+      "vhost": "/",
+      "destination": "jobs.dlq",
+      "destination_type": "queue",
+      "routing_key": "",
+      "arguments": {}
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+# Infra e serviços do laboratório. Perfis: `python`, `go` e `all` (ver README, seção 10).
+# `make up` sobe só rabbitmq e postgres; os serviços de aplicação entram com `--profile`.
+services:
+  # Broker de mensagens. A topologia (exchanges, filas, DLQ) vem de definitions.json no boot.
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports: ["5672:5672", "15672:15672"]
+    volumes:
+      - ./infra/rabbitmq/rabbitmq.conf:/etc/rabbitmq/conf.d/20-definitions.conf:ro
+      - ./infra/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # Banco compartilhado: jobs, job_results e outbox. As migrations rodam na primeira subida.
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: lab
+      POSTGRES_DB: lab
+    ports: ["5432:5432"]
+    volumes:
+      - ./db/migrations:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "lab"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # API FastAPI. Contexto de build na raiz para a imagem receber `contracts/`.
+  gateway-py:
+    build:
+      context: .
+      dockerfile: services/gateway-py/Dockerfile
+    environment:
+      GATEWAY_DATABASE_URL: postgresql+asyncpg://postgres:lab@postgres:5432/lab
+    ports: ["8000:8000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    profiles: [python, all]

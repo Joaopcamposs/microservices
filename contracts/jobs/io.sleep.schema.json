@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "io.sleep",
+  "description": "Job I/O-bound puro: dorme `ms` milissegundos. Mede o overhead do framework.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["ms"],
+  "properties": {
+    "ms": { "type": "integer", "minimum": 0, "maximum": 60000 }
+  }
+}

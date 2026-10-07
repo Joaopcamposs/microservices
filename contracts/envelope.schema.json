@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://microservices-lab/contracts/envelope.schema.json",
+  "title": "Envelope",
+  "description": "Mensagem neutra publicada no RabbitMQ. Independe de Celery, TaskIQ ou Go.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["job_id", "type", "payload", "created_at", "traceparent", "attempt", "origin"],
+  "properties": {
+    "job_id": { "type": "string", "format": "uuid" },
+    "type": {
+      "type": "string",
+      "enum": ["io.sleep", "io.fetch_urls", "cpu.pbkdf2", "data.json_transform", "pipeline.fanout"]
+    },
+    "payload": { "type": "object" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "traceparent": {
+      "type": "string",
+      "pattern": "^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$"
+    },
+    "attempt": { "type": "integer", "minimum": 0 },
+    "origin": { "type": "string", "enum": ["gateway-py", "gateway-go"] }
+  }
+}
