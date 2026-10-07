@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -36,7 +37,7 @@ func testPool(t *testing.T) *pgxpool.Pool {
 func newEnvelope() domain.Envelope {
 	return domain.Envelope{
 		JobID: uuid.NewString(), Type: domain.JobIOSleep, Payload: []byte(`{"ms": 1}`),
-		CreatedAt: domain.FormatCreatedAt(time.Now()), Traceparent: domain.NewTraceparent(),
+		CreatedAt: domain.FormatCreatedAt(time.Now()), Traceparent: "00-" + strings.Repeat("a", 32) + "-" + strings.Repeat("b", 16) + "-01",
 		Origin: domain.OriginGatewayGo,
 	}
 }

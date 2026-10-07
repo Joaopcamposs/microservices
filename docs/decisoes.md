@@ -25,3 +25,15 @@ Cada entrada registra uma decisão com trade-off: o que foi escolhido, o que foi
 **`io.fetch_urls`:** status 4xx/5xx é resultado (`status` no JSON); erro de rede ou timeout falha o job inteiro. Resultado parcial dependeria da ordem de chegada e não seria comparável entre stacks. Sem redirects e com timeout de 10 s em todas.
 
 **Custo:** o gerador e a agregação existem duas vezes (Python e Go). Os vetores dourados pegam qualquer divergência.
+
+## Observabilidade: traces por OTLP, métricas por scrape e Postgres
+
+**Decisão:** traces vão por OTLP/HTTP ao `otel-collector` e daí ao Jaeger. Métricas de infra (fila, outbox, CPU, memória) são scrape do Prometheus. Throughput e latência por worker vêm de `job_results` no Postgres, consultado direto pelo Grafana.
+
+**Descartado:** métricas de worker via OTLP/`prometheus_client`. Celery (prefork) e TaskIQ (multiprocess) exigiriam modo multiprocess e agregação para expor números comparáveis, e o benchmark mediria a instrumentação. `job_results` já tem `started_at`/`finished_at` gravados da mesma forma pelas 4 stacks.
+
+**Relay e worker irmãos no trace:** o envelope publicado é byte a byte o que o gateway gravou, incluindo o `traceparent` do span `enqueue job`. Fazer o relay reescrevê-lo para ficar entre gateway e worker quebraria a regra "envelope intacto". Custo: o trace não mostra o relay como pai do worker; o tempo na fila aparece como lacuna entre `publish outbox` e `process`.
+
+**Bridges sem span e sem spans de SQL:** a bridge só repassa e a task continua o trace pelo envelope; spans de SQL somariam ruído e overhead aos números comparados.
+
+**Provider não global, um por dono:** cada processo cria e descarrega o próprio `TracerProvider`. No Celery (prefork) é um por processo filho, porque o provider (e suas threads de exportação) não sobrevive ao fork.

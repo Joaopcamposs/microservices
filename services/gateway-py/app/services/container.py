@@ -1,5 +1,6 @@
 """Contêiner de dependências do processo."""
 
+from opentelemetry.sdk.trace import TracerProvider
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from app.core.settings import Settings
@@ -16,15 +17,24 @@ class Services:
     (pool de conexões) é criado em um lugar e fechado em outro, de forma explícita.
     """
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, tracer_provider: TracerProvider) -> None:
         """Monta o engine, o validador de schemas e o `JobService` com suas dependências.
 
-        `create_async_engine` não abre conexão aqui; o pool conecta sob demanda.
+        `create_async_engine` não abre conexão aqui; o pool conecta sob demanda. O provider de
+        traces nasce fora (a instrumentação HTTP precisa dele antes do lifespan), mas o
+        encerramento é daqui.
         """
         self._engine: AsyncEngine = create_async_engine(settings.database_url)
+        self.tracer_provider: TracerProvider = tracer_provider
         validator = PayloadValidator.from_directory(settings.contracts_dir / "jobs")
-        self.job_service = JobService(JobRepository(self._engine), validator, Origin.GATEWAY_PY)
+        self.job_service = JobService(
+            JobRepository(self._engine),
+            validator,
+            Origin.GATEWAY_PY,
+            self.tracer_provider.get_tracer("gateway-py"),
+        )
 
     async def close(self) -> None:
-        """Fecha o pool de conexões; chamado no shutdown da aplicação."""
+        """Fecha o pool e descarrega os spans pendentes; chamado no shutdown da aplicação."""
         await self._engine.dispose()
+        self.tracer_provider.shutdown()

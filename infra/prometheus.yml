@@ -1,0 +1,33 @@
+# Prometheus: scrape de todos os serviços pelo nome do compose. Intervalo curto (5s) porque os
+# cenários de benchmark duram segundos e precisam de resolução para o p95/p99.
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  # Métricas de processo e de domínio de cada serviço (outbox_pending, lag, jobs processados...).
+  - job_name: outbox-relay
+    static_configs: [{ targets: ["outbox-relay:9100"] }]
+  - job_name: worker-asyncio
+    static_configs: [{ targets: ["worker-asyncio:9101"] }]
+  - job_name: worker-go
+    static_configs: [{ targets: ["worker-go:9102"] }]
+  - job_name: celery-bridge
+    static_configs: [{ targets: ["celery-bridge:9103"] }]
+  - job_name: taskiq-bridge
+    static_configs: [{ targets: ["taskiq-bridge:9104"] }]
+  - job_name: gateway-py
+    static_configs: [{ targets: ["gateway-py:8000"] }]
+  - job_name: gateway-go
+    static_configs: [{ targets: ["gateway-go:8001"] }]
+
+  # CPU e memória por container.
+  - job_name: cadvisor
+    static_configs: [{ targets: ["cadvisor:8080"] }]
+
+  # Tamanho das filas: a família queue_coarse_metrics traz só as métricas por fila (mensagens
+  # prontas, não confirmadas), bem mais leve que o endpoint detalhado completo.
+  - job_name: rabbitmq
+    metrics_path: /metrics/detailed
+    params:
+      family: [queue_coarse_metrics]
+    static_configs: [{ targets: ["rabbitmq:15692"] }]

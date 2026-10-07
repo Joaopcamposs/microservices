@@ -1,0 +1,7 @@
+# Carrega os dashboards JSON de /var/lib/grafana/dashboards (montado de infra/grafana/dashboards).
+apiVersion: 1
+providers:
+  - name: lab
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards

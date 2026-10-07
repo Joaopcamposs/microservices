@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -43,7 +44,8 @@ func newTestRouter(t *testing.T, store *stubStore) *gin.Engine {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewRouter(NewHandler(service.NewJobService(store, validator, time.Now)))
+	provider := sdktrace.NewTracerProvider()
+	return NewRouter(NewHandler(service.NewJobService(store, validator, provider.Tracer("test"), time.Now)), provider)
 }
 
 func do(router *gin.Engine, method, target, body string) *httptest.ResponseRecorder {

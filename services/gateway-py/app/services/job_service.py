@@ -4,10 +4,12 @@ from datetime import UTC, datetime
 from typing import Protocol
 from uuid import UUID, uuid4
 
+from opentelemetry.trace import SpanKind, Tracer
+
 from app.core.value_objects import JobType, JsonObject, Origin, OutboxState, Target
 from app.domain.models import Envelope, JobView, OutboxEntry
 from app.domain.payload_validator import PayloadValidator
-from app.domain.traceparent import new_traceparent
+from app.infra.tracing import current_traceparent
 
 
 class JobStore(Protocol):
@@ -41,11 +43,14 @@ class JobStore(Protocol):
 class JobService:
     """Caso de uso: validar o pedido, montar o envelope e entregá-lo à outbox."""
 
-    def __init__(self, store: JobStore, validator: PayloadValidator, origin: Origin) -> None:
+    def __init__(
+        self, store: JobStore, validator: PayloadValidator, origin: Origin, tracer: Tracer
+    ) -> None:
         """Recebe as dependências por injeção; `origin` identifica este gateway no envelope."""
         self._store = store
         self._validator = validator
         self._origin = origin
+        self._tracer = tracer
 
     async def submit(self, job_type: JobType, target: Target, payload: JsonObject) -> UUID:
         """Valida o payload, monta o envelope e o grava na outbox; devolve o `job_id`.
@@ -54,16 +59,24 @@ class JobService:
         O `job_id` nasce aqui (UUID v4) porque é a chave de idempotência dos workers.
         """
         self._validator.validate(job_type, payload)
-        envelope = Envelope(
-            job_id=uuid4(),
-            type=job_type,
-            payload=payload,
-            created_at=datetime.now(UTC),
-            traceparent=new_traceparent(),
-            attempt=0,
-            origin=self._origin,
-        )
-        await self._store.enqueue(envelope, target)
+        # Span PRODUCER: o `traceparent` gravado no envelope é o dele, então relay e workers
+        # continuam o trace a partir daqui.
+        with self._tracer.start_as_current_span(
+            "enqueue job",
+            kind=SpanKind.PRODUCER,
+            attributes={"job.type": job_type.value, "job.target": target.value},
+        ) as span:
+            envelope = Envelope(
+                job_id=uuid4(),
+                type=job_type,
+                payload=payload,
+                created_at=datetime.now(UTC),
+                traceparent=current_traceparent(),
+                attempt=0,
+                origin=self._origin,
+            )
+            span.set_attribute("job.id", str(envelope.job_id))
+            await self._store.enqueue(envelope, target)
         return envelope.job_id
 
     async def get(self, job_id: UUID) -> JobView | None:

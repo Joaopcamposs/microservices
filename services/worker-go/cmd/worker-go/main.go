@@ -26,6 +26,7 @@ import (
 	"microservices-lab/worker-go/internal/postgres"
 	"microservices-lab/worker-go/internal/rabbitmq"
 	"microservices-lab/worker-go/internal/service"
+	"microservices-lab/worker-go/internal/tracing"
 )
 
 // shutdownTimeout é o tempo máximo para o servidor de métricas encerrar.
@@ -64,7 +65,20 @@ func run() error {
 	registry.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	m := metrics.New(registry)
 
-	processor := service.NewJobProcessor(validator, domain.NewHandlers(), postgres.NewResultRepository(pool), m, log, time.Now)
+	tracerProvider, err := tracing.NewProvider(ctx, "worker-go")
+	if err != nil {
+		return fmt.Errorf("configurar traces: %w", err)
+	}
+	// Descarrega os spans pendentes no encerramento, com contexto novo (ctx já foi cancelado).
+	defer func() {
+		flushCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		if err := tracerProvider.Shutdown(flushCtx); err != nil {
+			log.Error("descarregar traces", "error", err)
+		}
+	}()
+
+	processor := service.NewJobProcessor(validator, domain.NewHandlers(), postgres.NewResultRepository(pool), m, tracerProvider.Tracer("worker-go"), log, time.Now)
 	consumer := rabbitmq.NewConsumer(cfg.AMQPURL, cfg.Queue, cfg.Prefetch, cfg.PoolSize, processor, m, log)
 
 	mux := http.NewServeMux()

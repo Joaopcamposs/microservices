@@ -11,6 +11,9 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace/noop"
 
 	"microservices-lab/outbox-relay/internal/metrics"
 )
@@ -45,7 +48,7 @@ func (p *fakePublisher) Publish(context.Context, []Message) ([]int64, error) {
 func newTestRelay(store Store, publisher Publisher) (*Relay, *metrics.Metrics) {
 	m := metrics.New(prometheus.NewRegistry())
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return NewRelay(store, publisher, m, 100, time.Millisecond, log), m
+	return NewRelay(store, publisher, m, noop.NewTracerProvider().Tracer("test"), 100, time.Millisecond, log), m
 }
 
 // TestTickMeasuresLagOnlyForConfirmedMessages garante que a métrica de lag e o contador de
@@ -93,5 +96,31 @@ func TestRunCountsErrorsKeepsRunningAndStopsOnCancel(t *testing.T) {
 	case <-done:
 	case <-time.After(3 * time.Second):
 		t.Fatal("Run não encerrou após cancelar o contexto")
+	}
+}
+
+// TestPublishSpanContinuesTheTraceFromTheEnvelope garante que o span do relay é filho do span do
+// gateway: sem isso o trace quebra entre o enfileiramento e a publicação.
+func TestPublishSpanContinuesTheTraceFromTheEnvelope(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	envelope := []byte(`{"traceparent":"00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"}`)
+	store := &fakeStore{messages: []Message{{ID: 1, Envelope: envelope, CreatedAt: time.Now()}}}
+	relay, _ := newTestRelay(store, &fakePublisher{confirm: []int64{1}})
+	relay.tracer = provider.Tracer("test")
+
+	if _, err := relay.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+
+	spans := recorder.Ended()
+	if len(spans) != 1 {
+		t.Fatalf("spans = %d, quer 1", len(spans))
+	}
+	if got := spans[0].SpanContext().TraceID().String(); got != "0af7651916cd43dd8448eb211c80319c" {
+		t.Errorf("trace id = %s", got)
+	}
+	if got := spans[0].Parent().SpanID().String(); got != "b7ad6b7169203331" {
+		t.Errorf("parent = %s", got)
 	}
 }

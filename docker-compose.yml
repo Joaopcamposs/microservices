@@ -1,4 +1,4 @@
-# Infra e serviços do laboratório. Perfis: `python`, `go` e `all` (ver README, seção 10).
+# Infra e serviços do laboratório. Perfis: `python`, `go`, `observability` e `all` (ver README, seção 10).
 # `make up` sobe só rabbitmq e postgres; os serviços de aplicação entram com `--profile`.
 services:
   # Broker de mensagens. A topologia (exchanges, filas, DLQ) vem de definitions.json no boot.
@@ -36,6 +36,7 @@ services:
       dockerfile: services/gateway-py/Dockerfile
     environment:
       GATEWAY_DATABASE_URL: postgresql+asyncpg://postgres:lab@postgres:5432/lab
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
     ports: ["8000:8000"]
     depends_on:
       postgres: { condition: service_healthy }
@@ -47,6 +48,7 @@ services:
     environment:
       RELAY_DATABASE_URL: postgres://postgres:lab@postgres:5432/lab
       RELAY_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
     ports: ["9100:9100"]
     depends_on:
       postgres: { condition: service_healthy }
@@ -62,6 +64,7 @@ services:
     environment:
       WORKER_DATABASE_URL: postgresql://postgres:lab@postgres:5432/lab
       WORKER_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
     ports: ["9101:9101"]
     depends_on:
       postgres: { condition: service_healthy }
@@ -79,6 +82,7 @@ services:
     environment:
       WORKER_DATABASE_URL: postgresql://postgres:lab@postgres:5432/lab
       WORKER_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
     ports: ["9103:9103"]
     depends_on:
       rabbitmq: { condition: service_healthy }
@@ -93,6 +97,7 @@ services:
     environment:
       WORKER_DATABASE_URL: postgresql://postgres:lab@postgres:5432/lab
       WORKER_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
     depends_on:
       postgres: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
@@ -109,6 +114,7 @@ services:
     environment:
       WORKER_DATABASE_URL: postgresql://postgres:lab@postgres:5432/lab
       WORKER_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
     ports: ["9104:9104"]
     depends_on:
       rabbitmq: { condition: service_healthy }
@@ -123,6 +129,7 @@ services:
     environment:
       WORKER_DATABASE_URL: postgresql://postgres:lab@postgres:5432/lab
       WORKER_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
     depends_on:
       postgres: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
@@ -136,6 +143,7 @@ services:
       dockerfile: services/gateway-go/Dockerfile
     environment:
       GATEWAY_DATABASE_URL: postgres://postgres:lab@postgres:5432/lab
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
     ports: ["8001:8001"]
     depends_on:
       postgres: { condition: service_healthy }
@@ -150,6 +158,7 @@ services:
     environment:
       WORKER_DATABASE_URL: postgres://postgres:lab@postgres:5432/lab
       WORKER_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
     ports: ["9102:9102"]
     depends_on:
       postgres: { condition: service_healthy }
@@ -164,3 +173,59 @@ services:
     ports: ["8090:8090"]
     restart: unless-stopped
     profiles: [python, go, all]
+
+  # ---- Observabilidade (perfil `observability`; `all` inclui) --------------------------------
+
+  # Recebe OTLP dos serviços e repassa ao Jaeger (infra/otel-collector.yaml).
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.116.1
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./infra/otel-collector.yaml:/etc/otelcol/config.yaml:ro
+    ports: ["4318:4318"]
+    depends_on: [jaeger]
+    restart: unless-stopped
+    profiles: [observability, all]
+
+  # Backend e UI de traces: http://localhost:16686.
+  jaeger:
+    image: jaegertracing/all-in-one:1.65.0
+    ports: ["16686:16686"]
+    restart: unless-stopped
+    profiles: [observability, all]
+
+  # Scrape de métricas (infra/prometheus.yml): http://localhost:9090.
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    volumes:
+      - ./infra/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports: ["9090:9090"]
+    restart: unless-stopped
+    profiles: [observability, all]
+
+  # CPU e memória por container, para o Prometheus. No Docker Desktop (macOS) o cAdvisor não
+  # enxerga os cgroups dos containers (sem label `name`); no Linux, onde o benchmark roda, sim.
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    restart: unless-stopped
+    profiles: [observability, all]
+
+  # Dashboards provisionados (infra/grafana): http://localhost:3000, sem login.
+  grafana:
+    image: grafana/grafana:11.4.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports: ["3000:3000"]
+    depends_on: [prometheus, jaeger]
+    restart: unless-stopped
+    profiles: [observability, all]

@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
+	"go.opentelemetry.io/otel/trace"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -47,6 +50,12 @@ func envelope(jobType, payload string) []byte {
 // newProcessor monta o processor com o contrato real e o handler de io.sleep dado.
 func newProcessor(t *testing.T, handler domain.Handler, store *fakeStore) *JobProcessor {
 	t.Helper()
+	return newTracedProcessor(t, handler, store, sdktrace.NewTracerProvider().Tracer("test"))
+}
+
+// newTracedProcessor é o newProcessor com o tracer escolhido pelo teste.
+func newTracedProcessor(t *testing.T, handler domain.Handler, store *fakeStore, tracer trace.Tracer) *JobProcessor {
+	t.Helper()
 	validator, err := domain.NewContractValidator(filepath.Join("..", "..", "..", "..", "contracts"))
 	if err != nil {
 		t.Fatal(err)
@@ -54,7 +63,7 @@ func newProcessor(t *testing.T, handler domain.Handler, store *fakeStore) *JobPr
 	m := metrics.New(prometheus.NewRegistry())
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	handlers := map[domain.JobType]domain.Handler{domain.JobIOSleep: handler}
-	return NewJobProcessor(validator, handlers, store, m, log, time.Now)
+	return NewJobProcessor(validator, handlers, store, m, tracer, log, time.Now)
 }
 
 func okHandler(context.Context, json.RawMessage) (json.RawMessage, error) {
@@ -133,5 +142,34 @@ func TestProcessStoreFailureIsInfraError(t *testing.T) {
 	err := p.Process(context.Background(), envelope("io.sleep", `{"ms":0}`))
 	if err == nil || errors.Is(err, domain.ErrInvalidMessage) {
 		t.Fatalf("esperava erro de infra, veio %v", err)
+	}
+}
+
+// O span do worker é filho do span do gateway, identificado pelo traceparent do envelope.
+func TestProcessContinuesTheTraceFromTheEnvelope(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	p := newTracedProcessor(t, okHandler, newStore(), provider.Tracer("test"))
+	if err := p.Process(context.Background(), envelope("io.sleep", `{"ms":0}`)); err != nil {
+		t.Fatal(err)
+	}
+	byName := map[string]sdktrace.ReadOnlySpan{}
+	for _, span := range recorder.Ended() {
+		byName[span.Name()] = span
+	}
+	root := byName["process io.sleep"]
+	if root == nil || byName["run handler"] == nil || byName["save result"] == nil {
+		t.Fatalf("spans = %v", byName)
+	}
+	if got := root.SpanContext().TraceID().String(); got != "0af7651916cd43dd8448eb211c80319c" {
+		t.Errorf("trace id = %s", got)
+	}
+	if got := root.Parent().SpanID().String(); got != "b7ad6b7169203331" {
+		t.Errorf("parent span id = %s", got)
+	}
+	for _, child := range []string{"run handler", "save result"} {
+		if byName[child].Parent().SpanID() != root.SpanContext().SpanID() {
+			t.Errorf("%s não é filho de process", child)
+		}
 	}
 }

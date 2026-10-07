@@ -27,6 +27,7 @@ import (
 	"microservices-lab/gateway-go/internal/domain"
 	"microservices-lab/gateway-go/internal/postgres"
 	"microservices-lab/gateway-go/internal/service"
+	"microservices-lab/gateway-go/internal/tracing"
 
 	// Importa o pacote gerado pelo `swag init`: ele registra o spec lido pela Swagger UI.
 	_ "microservices-lab/gateway-go/docs"
@@ -60,8 +61,22 @@ func run() error {
 	}
 	defer pool.Close()
 
-	jobs := service.NewJobService(postgres.NewRepository(pool), validator, time.Now)
-	server := &http.Server{Addr: cfg.Addr, Handler: api.NewRouter(api.NewHandler(jobs)), ReadHeaderTimeout: 5 * time.Second}
+	tracerProvider, err := tracing.NewProvider(ctx, "gateway-go")
+	if err != nil {
+		return fmt.Errorf("configurar traces: %w", err)
+	}
+	// Descarrega os spans pendentes no encerramento, com contexto novo (ctx já foi cancelado).
+	defer func() {
+		flushCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		if err := tracerProvider.Shutdown(flushCtx); err != nil {
+			slog.Error("descarregar traces", "error", err)
+		}
+	}()
+
+	jobs := service.NewJobService(postgres.NewRepository(pool), validator, tracerProvider.Tracer("gateway-go"), time.Now)
+	router := api.NewRouter(api.NewHandler(jobs), tracerProvider)
+	server := &http.Server{Addr: cfg.Addr, Handler: router, ReadHeaderTimeout: 5 * time.Second}
 
 	serveErr := make(chan error, 1)
 	go func() { serveErr <- server.ListenAndServe() }()

@@ -2,10 +2,15 @@ package outbox
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"microservices-lab/outbox-relay/internal/metrics"
+	"microservices-lab/outbox-relay/internal/tracing"
 )
 
 // tickTimeout limita um ciclo de leitura, publicação e commit. Um ciclo em andamento não é
@@ -42,6 +47,7 @@ type Relay struct {
 	store        Store
 	publisher    Publisher
 	metrics      *metrics.Metrics
+	tracer       trace.Tracer
 	batchSize    int
 	pollInterval time.Duration
 	log          *slog.Logger
@@ -53,6 +59,7 @@ func NewRelay(
 	store Store,
 	publisher Publisher,
 	m *metrics.Metrics,
+	tracer trace.Tracer,
 	batchSize int,
 	pollInterval time.Duration,
 	log *slog.Logger,
@@ -61,6 +68,7 @@ func NewRelay(
 		store:        store,
 		publisher:    publisher,
 		metrics:      m,
+		tracer:       tracer,
 		batchSize:    batchSize,
 		pollInterval: pollInterval,
 		log:          log,
@@ -77,6 +85,7 @@ func (r *Relay) Tick(ctx context.Context) (int, error) {
 //
 // O lag é medido aqui, e não no publisher, porque só o relay conhece o CreatedAt da linha.
 func (r *Relay) publishAndMeasure(ctx context.Context, messages []Message) ([]int64, error) {
+	spans := r.startSpans(ctx, messages)
 	ids, err := r.publisher.Publish(ctx, messages)
 
 	confirmed := make(map[int64]struct{}, len(ids))
@@ -85,12 +94,41 @@ func (r *Relay) publishAndMeasure(ctx context.Context, messages []Message) ([]in
 	}
 	now := r.now()
 	for _, message := range messages {
-		if _, ok := confirmed[message.ID]; ok {
+		_, ok := confirmed[message.ID]
+		if ok {
 			r.metrics.PublishLag.Observe(now.Sub(message.CreatedAt).Seconds())
+		} else {
+			spans[message.ID].SetStatus(codes.Error, "mensagem não confirmada pelo broker")
 		}
+		spans[message.ID].End()
 	}
 	r.metrics.Published.Add(float64(len(ids)))
 	return ids, err
+}
+
+// startSpans abre um span "publish outbox" por mensagem, filho do span do gateway (traceparent
+// do envelope). O envelope segue intacto: o relay só lê o traceparent, não o reescreve, então o
+// worker continua o trace como irmão do relay, ambos filhos do gateway.
+func (r *Relay) startSpans(ctx context.Context, messages []Message) map[int64]trace.Span {
+	spans := make(map[int64]trace.Span, len(messages))
+	for _, message := range messages {
+		parent := tracing.Continue(ctx, envelopeTraceparent(message.Envelope))
+		_, span := r.tracer.Start(parent, "publish outbox", trace.WithSpanKind(trace.SpanKindProducer))
+		spans[message.ID] = span
+	}
+	return spans
+}
+
+// envelopeTraceparent lê só o campo traceparent do envelope; JSON ilegível devolve vazio e o
+// span vira raiz de um trace novo (o worker valida e manda o envelope inválido para a DLQ).
+func envelopeTraceparent(envelope []byte) string {
+	var header struct {
+		Traceparent string `json:"traceparent"`
+	}
+	if err := json.Unmarshal(envelope, &header); err != nil {
+		return ""
+	}
+	return header.Traceparent
 }
 
 // Run repete Tick até ctx ser cancelado.

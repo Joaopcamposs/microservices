@@ -8,8 +8,13 @@ import (
 	"log/slog"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"microservices-lab/worker-go/internal/domain"
 	"microservices-lab/worker-go/internal/metrics"
+	"microservices-lab/worker-go/internal/tracing"
 )
 
 // ResultStore é a porta de persistência do resultado. Fica aqui (lado do consumidor) para o
@@ -29,6 +34,7 @@ type JobProcessor struct {
 	handlers  map[domain.JobType]domain.Handler
 	store     ResultStore
 	metrics   *metrics.Metrics
+	tracer    trace.Tracer
 	log       *slog.Logger
 	now       func() time.Time
 }
@@ -39,10 +45,11 @@ func NewJobProcessor(
 	handlers map[domain.JobType]domain.Handler,
 	store ResultStore,
 	m *metrics.Metrics,
+	tracer trace.Tracer,
 	log *slog.Logger,
 	now func() time.Time,
 ) *JobProcessor {
-	return &JobProcessor{validator: validator, handlers: handlers, store: store, metrics: m, log: log, now: now}
+	return &JobProcessor{validator: validator, handlers: handlers, store: store, metrics: m, tracer: tracer, log: log, now: now}
 }
 
 // Process processa uma mensagem. Devolve erro embrulhando domain.ErrInvalidMessage se ela
@@ -56,22 +63,43 @@ func (p *JobProcessor) Process(ctx context.Context, body []byte) error {
 	if !ok {
 		return fmt.Errorf("%w: sem handler para o tipo %s", domain.ErrInvalidMessage, job.Type)
 	}
+	// Span CONSUMER filho do span do gateway: o traceparent do envelope liga os dois serviços.
+	ctx, span := p.tracer.Start(tracing.Continue(ctx, job.Traceparent), "process "+string(job.Type),
+		trace.WithSpanKind(trace.SpanKindConsumer),
+		trace.WithAttributes(attribute.String("job.id", job.JobID), attribute.String("job.type", string(job.Type)),
+			attribute.String("worker", domain.WorkerName)))
+	defer span.End()
 	result := p.run(ctx, job, handler)
-	saved, err := p.store.Save(ctx, result)
+	saved, err := p.save(ctx, result)
 	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		return fmt.Errorf("gravar resultado: %w", err)
 	}
 	status := string(result.Status)
 	if !saved {
 		status = "duplicate"
 	}
+	span.SetAttributes(attribute.String("job.status", status))
+	if result.Status == domain.StatusFailed {
+		span.SetStatus(codes.Error, *result.Error)
+	}
 	p.metrics.Processed.WithLabelValues(status).Inc()
 	p.log.Info("job processado", "job_id", job.JobID, "status", status, "traceparent", job.Traceparent)
 	return nil
 }
 
+// save grava o resultado dentro de um span próprio, para o trace mostrar o tempo no banco.
+func (p *JobProcessor) save(ctx context.Context, result domain.JobResult) (bool, error) {
+	ctx, span := p.tracer.Start(ctx, "save result")
+	defer span.End()
+	return p.store.Save(ctx, result)
+}
+
 // run executa o handler e converte sucesso ou erro em JobResult.
 func (p *JobProcessor) run(ctx context.Context, job domain.Job, handler domain.Handler) domain.JobResult {
+	ctx, span := p.tracer.Start(ctx, "run handler")
+	defer span.End()
 	startedAt := p.now()
 	output, err := handler(ctx, job.Payload)
 	finishedAt := p.now()

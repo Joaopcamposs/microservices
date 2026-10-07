@@ -4,6 +4,28 @@ Registro da evolução do código, no formato [Keep a Changelog](https://keepach
 
 ## [Não lançado]
 
+### 2026-10-07 · Fase 5: observabilidade
+
+#### Adicionado
+- Tracing OpenTelemetry (OTLP/HTTP) em gateway-py, gateway-go, outbox-relay e nos quatro workers: spans `enqueue job` (gateway), `publish outbox` (relay) e `process <tipo>` com `run handler` e `save result` (worker). O worker continua o trace a partir do `traceparent` do envelope, atravessando Python e Go.
+- Pilha no compose (perfil `observability`, também em `all`): `otel-collector`, `jaeger`, `prometheus`, `cadvisor` e `grafana`, com imagens de versão fixa. Configuração em `infra/otel-collector.yaml`, `infra/prometheus.yml` e `infra/grafana/` (datasources Prometheus, Jaeger e Postgres; dashboard `lab.json`).
+- Dashboard "Microservices Lab": throughput, latência p50/p95/p99, latência ponta a ponta, fila do RabbitMQ, `outbox_pending`, `outbox_publish_lag_seconds`, CPU e memória por container.
+- Testes: span filho do `traceparent` do envelope em relay, worker-go e workers Python; `traceparent` gravado pelo span em gateway-py e gateway-go.
+
+#### Alterado
+- O `traceparent` do envelope deixou de ser gerado por `domain/traceparent` (removido nos dois gateways) e passou a vir do span ativo.
+- gateway-py: o `FastAPIInstrumentor` é aplicado em `create_app`, e o tracing nativo do FastAPI 0.142 é desligado (`telemetry={"tracing": False}`). Por quê: com `OTEL_EXPORTER_OTLP_ENDPOINT` o FastAPI cria um provider global próprio (`service.name` genérico) e duplicava o span HTTP; instrumentar no lifespan era tarde demais, pois o Starlette monta os middlewares antes. `Services` agora recebe o `TracerProvider`.
+- `NewRelay`, `NewJobProcessor` e `NewJobService` (Go) e `JobService`/`JobProcessor` (Python) recebem um tracer injetado.
+
+#### Decisões
+- Throughput e latência por worker saem do Postgres (`job_results`), não de métricas OTLP: é uniforme entre as 4 stacks (Celery e TaskIQ são multiprocess). Ver `docs/decisoes.md`.
+- Relay e worker são irmãos no trace: o relay não reescreve o envelope. Bridges sem span; sem spans de SQL.
+
+#### Verificado
+- Critério da fase 5: um job com `target=all` pelo gateway-py e pelo gateway-go gera um único trace no Jaeger com gateway, relay e os 4 workers.
+- As 11 consultas do dashboard executam sem erro pela API do Grafana; os 9 alvos do Prometheus ficam `up`.
+- Limitação: no Docker Desktop (macOS) o cAdvisor não expõe o label `name` dos containers, então os painéis de CPU/memória ficam vazios.
+
 ### 2026-10-07 · Fase 4: workloads nos 4 workers
 
 #### Adicionado

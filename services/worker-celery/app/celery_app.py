@@ -9,12 +9,15 @@ import logging
 
 import psycopg
 from celery import Celery, Task
+from celery.signals import worker_process_shutdown
+from opentelemetry.sdk.trace import TracerProvider
 from psycopg_pool import ConnectionPool
 
 from app.core.settings import Settings
 from app.domain.contracts import ContractValidator, InvalidMessageError
 from app.domain.handlers import build_handlers
 from app.infra.result_repository import ResultRepository
+from app.infra.tracing import build_tracer_provider
 from app.services.job_processor import JobProcessor
 
 logger = logging.getLogger(__name__)
@@ -53,6 +56,9 @@ class JobTask(Task):
     """
 
     _processor: JobProcessor | None = None
+    # Um provider por processo filho, criado junto com o processor (o exporter usa threads, que
+    # não sobrevivem ao `fork`).
+    _tracer_provider: TracerProvider | None = None
 
     @property
     def processor(self) -> JobProcessor:
@@ -61,12 +67,25 @@ class JobTask(Task):
             pool = ConnectionPool(
                 _settings.database_url, min_size=1, max_size=1, timeout=5, open=True
             )
+            self._tracer_provider = build_tracer_provider("worker-celery")
             self._processor = JobProcessor(
                 ContractValidator.from_directory(_settings.contracts_dir),
                 build_handlers(),
                 ResultRepository(pool),
+                self._tracer_provider.get_tracer("worker-celery"),
             )
         return self._processor
+
+    def flush_traces(self) -> None:
+        """Descarrega os spans pendentes deste processo filho (chamado no encerramento dele)."""
+        if self._tracer_provider is not None:
+            self._tracer_provider.shutdown()
+
+
+@worker_process_shutdown.connect
+def flush_traces_on_shutdown(**_: object) -> None:
+    """Sem isso, os últimos spans do lote se perderiam quando o filho prefork encerra."""
+    process_job.flush_traces()
 
 
 @celery.task(

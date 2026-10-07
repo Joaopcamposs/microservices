@@ -1,0 +1,29 @@
+# Datasources provisionados no boot: nada para configurar na UI.
+apiVersion: 1
+datasources:
+  # Séries temporais de infra: fila, outbox, CPU e memória.
+  - name: Prometheus
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+  # Traces gateway -> relay -> worker.
+  - name: Jaeger
+    uid: jaeger
+    type: jaeger
+    access: proxy
+    url: http://jaeger:16686
+  # Throughput e latência por worker: as quatro stacks gravam o mesmo job_results, então a
+  # consulta é uniforme e não depende de cada runtime expor métricas iguais.
+  - name: Postgres
+    uid: postgres
+    type: grafana-postgresql-datasource
+    access: proxy
+    url: postgres:5432
+    user: postgres
+    jsonData:
+      database: lab
+      sslmode: disable
+    secureJsonData:
+      password: lab

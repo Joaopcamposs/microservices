@@ -60,7 +60,8 @@ CI/CD, Kubernetes, autenticação e frontend. Ficam como fases opcionais no fina
                    │ Postgres (status)│
                    └──────────────────┘
 
-   Todos os serviços ──► OpenTelemetry Collector ──► Grafana/Tempo/Prometheus
+   Traces:   serviços ──OTLP──► otel-collector ──► Jaeger ──► Grafana
+   Métricas: Prometheus (scrape dos serviços, RabbitMQ e cAdvisor) ──► Grafana
 ```
 
 ### Por que outbox?
@@ -122,9 +123,9 @@ microservices-lab/
 │   └── migrations/        # jobs, job_results e outbox (SQL puro, compartilhado)
 ├── infra/
 │   ├── rabbitmq/          # definitions.json: exchanges, filas, bindings e DLQ
-│   ├── otel-collector.yaml
-│   ├── grafana/
-│   └── prometheus.yml
+│   ├── otel-collector.yaml  # OTLP -> Jaeger
+│   ├── grafana/             # provisioning (datasources) e dashboards/lab.json
+│   └── prometheus.yml       # scrape dos serviços, RabbitMQ e cAdvisor
 ├── bench/
 │   ├── k6/                # scripts de carga
 │   └── results/           # CSVs e gráficos por rodada
@@ -225,7 +226,7 @@ Trade-off: é artificial (um hop a mais), mas mantém o contrato único. A alter
 
 O corpo do `POST` é o `payload` do job (JSON), validado contra `contracts/jobs/<type>.schema.json`. Tipo sem schema ou payload inválido retorna `422`. O `GET` devolve `status` agregado: `pending` (nenhum resultado), `running` (parcial) ou `completed` (4 resultados no `target=all`, 1 nos demais).
 
-Código em `services/gateway-py/app`: `api/` (rotas), `services/` (caso de uso e `Services`, dono do estado de processo criado no `lifespan`), `domain/` (envelope, validador de payload) e `infra/` (repositório Postgres). O `traceparent` é gerado localmente por enquanto; passa a vir do span OpenTelemetry na fase 5.
+Código em `services/gateway-py/app`: `api/` (rotas), `services/` (caso de uso e `Services`, dono do estado de processo criado no `lifespan`), `domain/` (envelope, validador de payload) e `infra/` (repositório Postgres). O `traceparent` vem do span `enqueue job` (`infra/tracing.py`); o `FastAPIInstrumentor` é aplicado em `create_app` (antes do lifespan, senão o Starlette já montou os middlewares) e o tracing nativo do FastAPI é desligado para não duplicar o span HTTP.
 
 Uso local (com `make up` rodando):
 
@@ -240,7 +241,7 @@ make test    # inclui integração com o Postgres; pula se o banco estiver fora
 
 Mesma API, mesmo contrato, mesma transação `jobs` + `outbox`, comportamento idêntico (inclusive `422` com `{"detail": ...}` e `404`). Esse é o teste de paridade: os dois gateways são intercambiáveis e escrevem no mesmo banco (um job criado em um aparece na listagem do outro). A diferença visível é `origin: "gateway-go"` no envelope.
 
-Código em `services/gateway-go`, em pacotes com dependências apontando para dentro: `internal/api` (handlers Gin e DTOs), `internal/service` (`JobService` e a interface `JobStore`), `internal/domain` (vocabulário do contrato, modelos, `PayloadValidator`, `traceparent`) e `internal/postgres` (SQL com `pgx`). O `main` monta tudo e faz graceful shutdown.
+Código em `services/gateway-go`, em pacotes com dependências apontando para dentro: `internal/api` (handlers Gin e DTOs), `internal/service` (`JobService` e a interface `JobStore`), `internal/domain` (vocabulário do contrato, modelos, `PayloadValidator`), `internal/tracing` (provider OTel e `Traceparent`) e `internal/postgres` (SQL com `pgx`). O `main` monta tudo e faz graceful shutdown.
 
 **Swagger:** o Gin não gera documentação sozinho como o FastAPI. Usamos `swaggo/swag` + `gin-swagger`: as anotações `@Summary`, `@Param`, `@Success` nos handlers geram `docs/` (commitado) via `make swagger`, e a UI com "Try it out" sai em **http://localhost:8001/docs**, o mesmo endereço do gateway-py (`/swagger` redireciona para lá). Mudou handler, parâmetro ou resposta: rode `make swagger`. Trade-off: o spec é gerado a partir de comentários, não dos tipos, então pode divergir se esquecerem de regenerar (o teste `TestSwaggerIsServedAtDocs` só garante que ele é servido). A alternativa `huma` gera o OpenAPI dos tipos como o FastAPI, mas troca o Gin por outro framework e foge do objetivo de aprender Gin.
 
@@ -358,7 +359,7 @@ Regras de entrega (diferenças em relação ao asyncio/Go):
 
 O ack da bridge não é "após gravar o resultado" como nos outros workers: o hop extra quebra essa regra de propósito, e o `task_acks_late` + `confirm_publish` + gravação idempotente fecham a lacuna (nenhuma etapa perde o job sem o broker saber). A fila interna do Celery (`celery.jobs`) é declarada pelo próprio Celery, fora do `definitions.json`.
 
-Prefetch justo: bridge com 64; no Celery, `-c 4` x `worker_prefetch_multiplier=16` = 64 em voo. Env `WORKER_*`: `DATABASE_URL`, `AMQP_URL`, `QUEUE` (`jobs.celery`), `CELERY_QUEUE` (`celery.jobs`), `PREFETCH` (64), `CONCURRENCY` (4), `METRICS_PORT` (9103). Métricas só da bridge (`bridge_messages_total{outcome}`); as do worker prefork entram na fase 5.
+Prefetch justo: bridge com 64; no Celery, `-c 4` x `worker_prefetch_multiplier=16` = 64 em voo. Env `WORKER_*`: `DATABASE_URL`, `AMQP_URL`, `QUEUE` (`jobs.celery`), `CELERY_QUEUE` (`celery.jobs`), `PREFETCH` (64), `CONCURRENCY` (4), `METRICS_PORT` (9103). Métricas só da bridge (`bridge_messages_total{outcome}`); o worker prefork não expõe métricas: throughput e latência dele vêm de `job_results` (seção 8).
 
 `io.sleep` usa `time.sleep`: cada tarefa ocupa um processo filho, então a vazão I/O-bound fica limitada a `-c`. É o ponto do experimento; teste também `--pool=gevent` ou `threads` e registre a diferença.
 
@@ -500,11 +501,27 @@ Se sobrar energia, um `worker-rust` com `lapin` + `tokio` fecha o triângulo. Pr
 
 ## 8. Observabilidade
 
-Você já domina OpenTelemetry, então esta fase é para ver o trace atravessando as linguagens.
+Sobe com `docker compose --profile all up -d --build` (ou `--profile observability` só com a pilha de observabilidade). Os serviços de aplicação já recebem `OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector:4318`; sem essa variável os spans existem (o `traceparent` segue válido) mas não são exportados, então testes e `make run` não precisam de collector.
 
-- Cada serviço exporta traces e métricas via OTLP para o `otel-collector`.
-- O `traceparent` vai dentro do envelope: o gateway o grava na outbox junto com o resto, o relay o preserva ao publicar, e o worker extrai e continua o trace. Um único trace mostra `gateway → outbox → relay → fila → worker → banco`.
-- Dashboards no Grafana: throughput, latência p50/p95/p99, tamanho da fila, `outbox_pending` e `outbox_publish_lag_seconds`, CPU e memória por container (cAdvisor).
+| Ferramenta | URL | Papel |
+|---|---|---|
+| Grafana | http://localhost:3000 (sem login) | dashboard "Microservices Lab" e explorador de traces |
+| Jaeger | http://localhost:16686 | UI de traces |
+| Prometheus | http://localhost:9090 | métricas (scrape a cada 5 s) |
+
+### Traces
+
+O `traceparent` vai dentro do envelope: o gateway abre o span `enqueue job` (filho do span HTTP), grava o `traceparent` dele na outbox, o relay lê o campo sem reescrevê-lo e abre `publish outbox`, e cada worker extrai o campo e abre `process <tipo>` (com filhos `run handler` e `save result`). Um trace mostra `gateway → relay → worker` nas duas linguagens; relay e workers são **irmãos** sob o span do gateway, porque o envelope publicado é o mesmo que o gateway gravou. As bridges do Celery e do TaskIQ não criam span (só repassam a mensagem); a task do framework continua o trace pelo envelope. Não há spans de SQL.
+
+Cada serviço é dono do próprio `TracerProvider` (não global) e o descarrega no shutdown; no Celery (prefork) o provider é criado por processo filho, e no TaskIQ no `WORKER_STARTUP`.
+
+### Métricas e dashboard
+
+O dashboard (`infra/grafana/dashboards/lab.json`, provisionado) combina três fontes:
+
+- **Postgres (`job_results`):** throughput e latência de execução p50/p95/p99 por worker, e latência ponta a ponta p95 (`finished_at - jobs.created_at`). As quatro stacks gravam a mesma tabela, então a consulta é uniforme e não depende de cada runtime expor as mesmas métricas.
+- **Prometheus:** `outbox_pending`, `outbox_publish_lag_seconds`, publicadas/erros do relay e mensagens prontas por fila do RabbitMQ (`:15692/metrics/detailed?family=queue_coarse_metrics`).
+- **cAdvisor:** CPU e memória por container. No Docker Desktop (macOS) o cAdvisor não enxerga os cgroups dos containers e esses dois painéis ficam vazios; no Linux, onde o benchmark deve rodar, funcionam.
 
 ---
 
@@ -535,7 +552,7 @@ A última linha importa: o custo de desenvolvimento faz parte da resposta.
 
 ## 10. docker-compose (esqueleto)
 
-Hoje o `docker-compose.yml` do repositório já tem todos os serviços das fases 0 a 4 (inclusive o `mock-server`); o esqueleto abaixo é o plano, sem os limites de recurso aplicados. O build do gateway usa a raiz do repo como contexto para copiar `contracts/` para a imagem. O Postgres aplica `db/migrations/*.sql` na primeira inicialização. Para recriar o banco do zero, use `make reset`.
+Hoje o `docker-compose.yml` do repositório já tem todos os serviços das fases 0 a 5 (inclusive o `mock-server` e a pilha de observabilidade, no perfil `observability`); o esqueleto abaixo é o plano, sem os limites de recurso aplicados. O build do gateway usa a raiz do repo como contexto para copiar `contracts/` para a imagem. O Postgres aplica `db/migrations/*.sql` na primeira inicialização. Para recriar o banco do zero, use `make reset`.
 
 ```yaml
 services:
@@ -627,7 +644,7 @@ docker compose up --build gateway-go outbox-relay worker-go rabbitmq postgres
 | 2. Caminho Go | gateway-go (reaproveita o relay) + worker-go; aprenda Gin, `amqp091-go`, goroutines | Mesmo teste da fase 1 passa |
 | 3. Celery e TaskIQ | Dois workers com bridge | Os 4 workers respondem ao mesmo job |
 | 4. Workloads | `cpu.pbkdf2`, `io.fetch_urls`, `data.json_transform` implementados nos 4 workers | Resultados idênticos entre stacks |
-| 5. Observabilidade | OTel, Grafana, trace atravessando as linguagens | Um trace mostra gateway → worker |
+| 5. Observabilidade ✅ | OTel, Jaeger, Prometheus, Grafana, trace atravessando as linguagens | Um trace mostra gateway → worker |
 | 6. Benchmark base | CPU-bound, I/O-bound, footprint | Relatório v1 no README |
 | 7. Cenários extras | Seção 7 (pico, falhas, free-threading, escala) | Relatório v2 |
 | 8. Opcional | Kubernetes (Helm/manifests), CI com GitHub Actions, worker Rust | À vontade |

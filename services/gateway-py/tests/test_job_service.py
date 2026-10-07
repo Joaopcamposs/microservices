@@ -5,6 +5,9 @@ from pathlib import Path
 from uuid import UUID
 
 from jsonschema import Draft202012Validator
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from app.core.value_objects import JobType, Origin, OutboxState, Target
 from app.domain.models import Envelope, JobView, OutboxEntry
@@ -49,7 +52,10 @@ async def test_submit_builds_envelope_that_satisfies_contract() -> None:
     """
     store = FakeStore()
     service = JobService(
-        store, PayloadValidator.from_directory(CONTRACTS / "jobs"), Origin.GATEWAY_PY
+        store,
+        PayloadValidator.from_directory(CONTRACTS / "jobs"),
+        Origin.GATEWAY_PY,
+        TracerProvider().get_tracer("test"),
     )
 
     job_id = await service.submit(JobType.IO_SLEEP, Target.GO, {"ms": 10})
@@ -59,3 +65,24 @@ async def test_submit_builds_envelope_that_satisfies_contract() -> None:
     assert target is Target.GO
     schema = json.loads((CONTRACTS / "envelope.schema.json").read_text())
     Draft202012Validator(schema).validate(json.loads(envelope.to_json()))
+
+
+async def test_submit_stores_traceparent_of_the_enqueue_span() -> None:
+    """O `traceparent` do envelope aponta para o span `enqueue job`, ligando gateway e workers."""
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    store = FakeStore()
+    service = JobService(
+        store,
+        PayloadValidator.from_directory(CONTRACTS / "jobs"),
+        Origin.GATEWAY_PY,
+        provider.get_tracer("test"),
+    )
+
+    await service.submit(JobType.IO_SLEEP, Target.ALL, {"ms": 10})
+
+    span = exporter.get_finished_spans()[0]
+    _, trace_id, span_id, _ = store.enqueued[0][0].traceparent.split("-")
+    assert span.name == "enqueue job"
+    assert (trace_id, span_id) == (f"{span.context.trace_id:032x}", f"{span.context.span_id:016x}")

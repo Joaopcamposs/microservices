@@ -18,6 +18,7 @@ from app.core.settings import Settings
 from app.domain.contracts import ContractValidator, InvalidMessageError
 from app.domain.handlers import build_handlers
 from app.infra.result_repository import ResultRepository
+from app.infra.tracing import build_tracer_provider
 from app.services.job_processor import JobProcessor
 
 logger = logging.getLogger(__name__)
@@ -46,17 +47,20 @@ broker = AioPikaBroker(
 async def create_processor(state: TaskiqState) -> None:
     """Monta pool e processor uma vez por processo do worker, no startup."""
     state.pool = await asyncpg.create_pool(_settings.database_url)
+    state.tracer_provider = build_tracer_provider("worker-taskiq")
     state.processor = JobProcessor(
         ContractValidator.from_directory(_settings.contracts_dir),
         build_handlers(),
         ResultRepository(state.pool),
+        state.tracer_provider.get_tracer("worker-taskiq"),
     )
 
 
 @broker.on_event(TaskiqEvents.WORKER_SHUTDOWN)
 async def close_pool(state: TaskiqState) -> None:
-    """Fecha o pool do Postgres no encerramento do worker."""
+    """Fecha o pool do Postgres e descarrega os spans pendentes no encerramento do worker."""
     await state.pool.close()
+    state.tracer_provider.shutdown()
 
 
 @broker.task(task_name=TASK_NAME, retry_on_error=True, max_retries=5)

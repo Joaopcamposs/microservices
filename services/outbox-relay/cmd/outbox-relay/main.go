@@ -26,6 +26,7 @@ import (
 	"microservices-lab/outbox-relay/internal/outbox"
 	"microservices-lab/outbox-relay/internal/postgres"
 	"microservices-lab/outbox-relay/internal/rabbitmq"
+	"microservices-lab/outbox-relay/internal/tracing"
 )
 
 // shutdownTimeout é o tempo máximo para o servidor de métricas encerrar.
@@ -58,6 +59,17 @@ func run() error {
 	}
 	defer pool.Close()
 
+	tracerProvider, err := tracing.NewProvider(ctx, "outbox-relay")
+	if err != nil {
+		return fmt.Errorf("tracing: %w", err)
+	}
+	defer func() {
+		// Contexto novo: ctx já está cancelado no shutdown e o flush precisa de tempo.
+		flushCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		_ = tracerProvider.Shutdown(flushCtx)
+	}()
+
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(collectors.NewGoCollector(), collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
 	relayMetrics := metrics.New(registry)
@@ -66,7 +78,7 @@ func run() error {
 	publisher := rabbitmq.NewPublisher(cfg.AMQPURL, log)
 	defer func() { _ = publisher.Close() }()
 
-	relay := outbox.NewRelay(store, publisher, relayMetrics, cfg.BatchSize, cfg.PollInterval, log)
+	relay := outbox.NewRelay(store, publisher, relayMetrics, tracerProvider.Tracer("outbox-relay"), cfg.BatchSize, cfg.PollInterval, log)
 	maintainer := outbox.NewMaintainer(store, relayMetrics, cfg.Retention, cfg.PurgeInterval, log)
 	server := newMetricsServer(cfg.MetricsAddr, registry)
 
