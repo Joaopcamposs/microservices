@@ -1,5 +1,7 @@
 # Infra e serviços do laboratório. Perfis: `python`, `go`, `observability` e `all` (ver README, seção 10).
 # `make up` sobe só rabbitmq e postgres; os serviços de aplicação entram com `--profile`.
+# Todos têm o mesmo limite (1 CPU, 512 MB) para o benchmark ser justo. `OTEL_ENDPOINT=` (vazio)
+# desliga a exportação de traces: o benchmark roda assim para não medir a observabilidade.
 services:
   # Broker de mensagens. A topologia (exchanges, filas, DLQ) vem de definitions.json no boot.
   rabbitmq:
@@ -36,10 +38,13 @@ services:
       dockerfile: services/gateway-py/Dockerfile
     environment:
       GATEWAY_DATABASE_URL: postgresql+asyncpg://postgres:lab@postgres:5432/lab
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_ENDPOINT-http://otel-collector:4318}
     ports: ["8000:8000"]
     depends_on:
       postgres: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: "1", memory: 512M }
     profiles: [python, all]
 
   # Único publicador do RabbitMQ: lê a outbox e publica com confirm. Métricas em :9100/metrics.
@@ -48,11 +53,14 @@ services:
     environment:
       RELAY_DATABASE_URL: postgres://postgres:lab@postgres:5432/lab
       RELAY_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_ENDPOINT-http://otel-collector:4318}
     ports: ["9100:9100"]
     depends_on:
       postgres: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: "1", memory: 512M }
     restart: unless-stopped
     profiles: [python, go, all]
 
@@ -64,11 +72,14 @@ services:
     environment:
       WORKER_DATABASE_URL: postgresql://postgres:lab@postgres:5432/lab
       WORKER_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_ENDPOINT-http://otel-collector:4318}
     ports: ["9101:9101"]
     depends_on:
       postgres: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: "1", memory: 512M }
     restart: unless-stopped
     profiles: [python, all]
 
@@ -82,10 +93,13 @@ services:
     environment:
       WORKER_DATABASE_URL: postgresql://postgres:lab@postgres:5432/lab
       WORKER_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_ENDPOINT-http://otel-collector:4318}
     ports: ["9103:9103"]
     depends_on:
       rabbitmq: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: "1", memory: 512M }
     restart: unless-stopped
     profiles: [python, all]
 
@@ -97,10 +111,13 @@ services:
     environment:
       WORKER_DATABASE_URL: postgresql://postgres:lab@postgres:5432/lab
       WORKER_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_ENDPOINT-http://otel-collector:4318}
     depends_on:
       postgres: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: "1", memory: 512M }
     restart: unless-stopped
     profiles: [python, all]
 
@@ -114,10 +131,13 @@ services:
     environment:
       WORKER_DATABASE_URL: postgresql://postgres:lab@postgres:5432/lab
       WORKER_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_ENDPOINT-http://otel-collector:4318}
     ports: ["9104:9104"]
     depends_on:
       rabbitmq: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: "1", memory: 512M }
     restart: unless-stopped
     profiles: [python, all]
 
@@ -129,10 +149,13 @@ services:
     environment:
       WORKER_DATABASE_URL: postgresql://postgres:lab@postgres:5432/lab
       WORKER_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_ENDPOINT-http://otel-collector:4318}
     depends_on:
       postgres: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: "1", memory: 512M }
     restart: unless-stopped
     profiles: [python, all]
 
@@ -143,10 +166,13 @@ services:
       dockerfile: services/gateway-go/Dockerfile
     environment:
       GATEWAY_DATABASE_URL: postgres://postgres:lab@postgres:5432/lab
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_ENDPOINT-http://otel-collector:4318}
     ports: ["8001:8001"]
     depends_on:
       postgres: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: "1", memory: 512M }
     restart: unless-stopped
     profiles: [go, all]
 
@@ -158,11 +184,14 @@ services:
     environment:
       WORKER_DATABASE_URL: postgres://postgres:lab@postgres:5432/lab
       WORKER_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_ENDPOINT-http://otel-collector:4318}
     ports: ["9102:9102"]
     depends_on:
       postgres: { condition: service_healthy }
       rabbitmq: { condition: service_healthy }
+    deploy:
+      resources:
+        limits: { cpus: "1", memory: 512M }
     restart: unless-stopped
     profiles: [go, all]
 

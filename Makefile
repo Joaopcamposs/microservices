@@ -1,5 +1,5 @@
-# Atalhos do projeto. Os de Python rodam em services/gateway-py e nos workers asyncio, celery e
-# taskiq (cada serviço tem seu uv); os de Go, em services/outbox-relay, gateway-go, worker-go
+# Atalhos do projeto. Os de Python rodam em services/gateway-py, nos workers asyncio, celery e
+# taskiq e em bench/ (cada um tem seu uv); os de Go, em services/outbox-relay, gateway-go, worker-go
 # e mock-server.
 
 
@@ -13,6 +13,7 @@ ruff:
 	cd services/worker-asyncio && uv run ruff check . --fix && uv run ruff format .
 	cd services/worker-celery && uv run ruff check . --fix && uv run ruff format .
 	cd services/worker-taskiq && uv run ruff check . --fix && uv run ruff format .
+	cd bench && uv run ruff check . --fix && uv run ruff format .
 
 # Formata e analisa o código Go do outbox-relay (gofmt reescreve, vet aponta problemas).
 gofmt:
@@ -35,6 +36,7 @@ test:
 	cd services/worker-asyncio && uv run pytest -x --tb=short -q
 	cd services/worker-celery && uv run pytest -x --tb=short -q
 	cd services/worker-taskiq && uv run pytest -x --tb=short -q
+	cd bench && uv run pytest -x --tb=short -q
 	cd services/outbox-relay && go test ./...
 	cd services/gateway-go && go test ./...
 	cd services/worker-go && go test ./...
@@ -59,3 +61,21 @@ logs:
 # Abre um shell SQL no banco `lab`.
 psql:
 	docker compose exec postgres psql -U postgres -d lab
+
+# Benchmark base (fase 6). Sobe a stack sem observabilidade e com o tracing desligado
+# (OTEL_ENDPOINT vazio) para não medir a instrumentação; resultados em bench/results/.
+bench-up:
+	docker compose stop otel-collector jaeger prometheus cadvisor grafana
+	OTEL_ENDPOINT= docker compose --profile python --profile go up -d --build --wait
+
+# Cenários de carga nos 4 workers (5 rodadas cada); veja `uv run python -m lab_bench run -h`.
+bench:
+	cd bench && uv run python -m lab_bench run
+
+# Vazão e latência HTTP do POST /jobs dos dois gateways.
+bench-gateway:
+	cd bench && uv run python -m lab_bench gateway
+
+# Imagem, memória ociosa e tempo até o primeiro resultado de cada stack (reinicia os workers).
+bench-footprint:
+	cd bench && uv run python -m lab_bench footprint

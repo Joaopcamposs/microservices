@@ -4,6 +4,23 @@ Registro da evolução do código, no formato [Keep a Changelog](https://keepach
 
 ## [Não lançado]
 
+### 2026-10-07 · Fase 6: benchmark base
+
+#### Adicionado
+- `bench/` (Python, uv próprio): driver `lab_bench` com os comandos `run`, `gateway` e `footprint`. Cenários `overhead` (`io.sleep` 0 ms), `cpu` (`cpu.pbkdf2`), `io` (`io.fetch_urls`, 5 GETs de 200 ms) e `serialization` (`data.json_transform`), 5 rodadas por worker, CSV bruto e resumo Markdown (mediana e dispersão) em `bench/results/`. Testes da estatística e do parse de `docker stats`.
+- Alvos do Makefile: `bench-up`, `bench`, `bench-gateway`, `bench-footprint`; `make ruff` e `make test` incluem `bench/`.
+- Limite de 1 CPU e 512 MB em todos os serviços de aplicação no compose (metodologia, item 1).
+- `OTEL_ENDPOINT` no compose: vazio desliga a exportação de traces, para o benchmark não medir a instrumentação.
+- Relatório v1 no README (seção 9): resultados, leitura e limitações.
+
+#### Decisões
+- Driver próprio em vez de k6/`hey`: a rodada precisa pausar o worker, esperar a outbox esvaziar e ler `job_results`. Ver `docs/decisoes.md`.
+- Vazão medida drenando backlog (worker pausado durante o envio). A primeira versão media do primeiro POST ao último resultado e dava ~150 jobs/s em todas as stacks: era o limite do gateway, não do worker.
+
+#### Verificado
+- 80 rodadas (4 cenários x 4 workers x 5), ~34 mil jobs: 0 falhas, 0 perdidos.
+- Limitação: o hash gravado no nome dos resultados é o do último commit; a árvore tinha mudanças da fase 6 sem commit.
+
 ### 2026-10-07 · Fase 5: observabilidade
 
 #### Adicionado

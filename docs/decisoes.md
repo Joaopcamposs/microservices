@@ -37,3 +37,13 @@ Cada entrada registra uma decisão com trade-off: o que foi escolhido, o que foi
 **Bridges sem span e sem spans de SQL:** a bridge só repassa e a task continua o trace pelo envelope; spans de SQL somariam ruído e overhead aos números comparados.
 
 **Provider não global, um por dono:** cada processo cria e descarrega o próprio `TracerProvider`. No Celery (prefork) é um por processo filho, porque o provider (e suas threads de exportação) não sobrevive ao fork.
+
+## Benchmark: driver próprio e vazão por drenagem de backlog
+
+**Decisão:** o driver (`bench/lab_bench`) pausa o worker, envia os jobs pelo gateway, espera o relay publicar tudo e libera o worker. Vazão = jobs / (último `finished_at` - primeiro `started_at`). Tempos vêm de `job_results`, iguais nas 4 stacks.
+
+**Descartado:** k6/`hey` contra o gateway com medição ponta a ponta. A primeira tentativa (do primeiro POST ao último resultado) deu ~150 jobs/s em todas as stacks, porque o gateway (duas escritas no Postgres por POST) era o gargalo e escondia o worker. k6 também não pausa workers nem lê o banco.
+
+**Custo:** a latência ponta a ponta fica inflada pelo tempo de pausa e não é reportada como métrica; só `exec` e vazão comparam stacks. A vazão de drenagem é um teto, não o comportamento com chegada contínua (isso é o cenário 7.1).
+
+**Concorrência desigual por desenho:** prefetch é 64 em todas, mas a execução real difere (Celery `-c 4`, TaskIQ 2 x 32, asyncio e Go ~64). Igualar a concorrência esconderia justamente o modelo de cada framework; o relatório registra a diferença.

@@ -1,0 +1,24 @@
+[project]
+name = "lab-bench"
+version = "0.1.0"
+description = "Driver de benchmark do Microservices Lab: gera carga nos gateways e mede os workers"
+requires-python = ">=3.13"
+dependencies = ["httpx>=0.27"]
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+# D1xx: exige docstring em módulo, classe e função (regra do AGENTS.md).
+select = ["E", "F", "I", "UP", "B", "ASYNC", "D1"]

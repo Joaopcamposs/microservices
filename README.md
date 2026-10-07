@@ -127,8 +127,8 @@ microservices-lab/
 │   ├── grafana/             # provisioning (datasources) e dashboards/lab.json
 │   └── prometheus.yml       # scrape dos serviços, RabbitMQ e cAdvisor
 ├── bench/
-│   ├── k6/                # scripts de carga
-│   └── results/           # CSVs e gráficos por rodada
+│   ├── lab_bench/         # driver de carga e medição (Python, uv próprio)
+│   └── results/           # CSV bruto e resumo Markdown por execução
 ├── docs/
 │   └── decisoes.md        # ADRs curtos
 ├── docker-compose.yml
@@ -528,11 +528,11 @@ O dashboard (`infra/grafana/dashboards/lab.json`, provisionado) combina três fo
 ## 9. Metodologia de benchmark (para o resultado ser justo)
 
 1. **Mesmos recursos:** `deploy.resources.limits` iguais em todos os containers (ex.: 1 CPU, 512 MB).
-2. **Mesma configuração lógica:** prefetch e concorrência comparáveis; registre o que usou, incluindo o intervalo de polling e o tamanho de lote do relay (iguais para todas as stacks, já que o relay é único).
+2. **Mesma configuração lógica:** (o compose já aplica 1 CPU e 512 MB a todos os serviços de aplicação) prefetch e concorrência comparáveis; registre o que usou, incluindo o intervalo de polling e o tamanho de lote do relay (iguais para todas as stacks, já que o relay é único).
 3. **Warm-up:** descarte os primeiros 30 s.
 4. **Repetição:** pelo menos 5 rodadas por cenário; reporte mediana e dispersão.
 5. **Máquina limpa:** nada pesado rodando em paralelo.
-6. **Ferramenta de carga:** k6 (ou `hey`) contra os gateways.
+6. **Ferramenta de carga:** driver próprio em `bench/lab_bench` (httpx assíncrono), no lugar de k6/`hey`: ele precisa pausar o worker, esperar a outbox esvaziar e ler `job_results`, o que as ferramentas HTTP não fazem. Ver "Como rodar" abaixo.
 7. **Registre tudo** em `bench/results/` (CSV + gráfico + commit hash).
 
 ### Métricas
@@ -547,6 +547,91 @@ O dashboard (`infra/grafana/dashboards/lab.json`, provisionado) combina três fo
 | Esforço | linhas de código e horas gastas por worker |
 
 A última linha importa: o custo de desenvolvimento faz parte da resposta.
+
+### Como rodar (fase 6)
+
+```bash
+make bench-up          # stack sem observabilidade e com tracing desligado (OTEL_ENDPOINT vazio)
+make bench             # 4 cenários x 4 workers x 5 rodadas -> bench/results/<data>-<commit>.{csv,md}
+make bench-gateway     # POST /jobs dos dois gateways
+make bench-footprint   # imagem, memória ociosa, tempo até o 1º resultado (reinicia os workers)
+```
+
+Cada rodada: warm-up descartado (um décimo dos jobs), depois o **worker é pausado** (`docker compose pause`), os jobs entram pelo gateway-go (concorrência 64, laço fechado) e, quando o relay publicou todos, o worker é liberado. A vazão é `jobs / (último resultado - primeiro job iniciado)`: mede o worker drenando um backlog, e não o gateway. Latências de execução (`exec`) vêm de `job_results.finished_at - started_at`. CPU% e memória vêm de `docker stats` somando bridge e worker. O CSV traz todas as rodadas; o `.md` traz mediana e dispersão (max - min) da vazão.
+
+### Resultados v1 (fase 6)
+
+Execução `20261007T192040Z-de56571`, Docker Desktop (VM de 10 CPUs, 4 GB), cada serviço limitado a 1 CPU e 512 MB, 5 rodadas por célula. O hash é o do último commit; a árvore tinha mudanças da fase 6 ainda sem commit.
+
+#### Cenário overhead
+
+| worker | rodadas | jobs/s (mediana) | ± | exec p50 | exec p95 | exec p99 | e2e p95 | CPU% médio | mem máx MB | falhas | perdas |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| asyncio | 5 | 1977.4 | 337.0 | 0 ms | 1 ms | 1 ms | 6.49 s | 45 | 76 | 0 | 0 |
+| go | 5 | 3683.1 | 408.2 | 0 ms | 0 ms | 0 ms | 6.34 s | 9 | 22 | 0 | 0 |
+| celery | 5 | 752.7 | 135.2 | 0 ms | 1 ms | 2 ms | 6.49 s | 100 | 275 | 0 | 0 |
+| taskiq | 5 | 1295.7 | 117.1 | 0 ms | 0 ms | 1 ms | 6.45 s | 73 | 167 | 0 | 0 |
+
+#### Cenário cpu
+
+| worker | rodadas | jobs/s (mediana) | ± | exec p50 | exec p95 | exec p99 | e2e p95 | CPU% médio | mem máx MB | falhas | perdas |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| asyncio | 5 | 19.5 | 0.5 | 2999 ms | 3711 ms | 3902 ms | 10.39 s | 86 | 70 | 0 | 0 |
+| go | 5 | 26.7 | 0.4 | 796 ms | 1605 ms | 1871 ms | 7.77 s | 80 | 19 | 0 | 0 |
+| celery | 5 | 24.4 | 2.8 | 117 ms | 193 ms | 195 ms | 8.36 s | 79 | 277 | 0 | 0 |
+| taskiq | 5 | 19.3 | 2.2 | 2391 ms | 3798 ms | 4235 ms | 10.66 s | 83 | 173 | 0 | 0 |
+
+#### Cenário io
+
+| worker | rodadas | jobs/s (mediana) | ± | exec p50 | exec p95 | exec p99 | e2e p95 | CPU% médio | mem máx MB | falhas | perdas |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| asyncio | 5 | 70.2 | 1.3 | 614 ms | 690 ms | 718 ms | 4.68 s | 69 | 146 | 0 | 0 |
+| go | 5 | 274.3 | 2.9 | 207 ms | 218 ms | 222 ms | 3.03 s | 10 | 45 | 0 | 0 |
+| celery | 5 | 17.9 | 0.4 | 216 ms | 229 ms | 238 ms | 16.52 s | 28 | 329 | 0 | 0 |
+| taskiq | 5 | 60.8 | 5.5 | 321 ms | 385 ms | 410 ms | 5.22 s | 67 | 204 | 0 | 0 |
+
+#### Cenário serialization
+
+| worker | rodadas | jobs/s (mediana) | ± | exec p50 | exec p95 | exec p99 | e2e p95 | CPU% médio | mem máx MB | falhas | perdas |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| asyncio | 5 | 69.9 | 5.5 | 71 ms | 646 ms | 692 ms | 3.17 s | 88 | 139 | 0 | 0 |
+| go | 5 | 159.1 | 9.4 | 7 ms | 69 ms | 110 ms | 2.07 s | 50 | 38 | 0 | 0 |
+| celery | 5 | 61.5 | 2.9 | 70 ms | 90 ms | 92 ms | 3.58 s | 61 | 336 | 0 | 0 |
+| taskiq | 5 | 67.0 | 3.5 | 66 ms | 180 ms | 212 ms | 3.28 s | 50 | 238 | 0 | 0 |
+
+CPU% é por stack (100 = 1 CPU cheia, que é o teto do limite). `e2e p95` inclui o tempo em que o worker ficou pausado e **não** é métrica de latência comparável: use `exec` e a vazão.
+
+**Gateways** (`make bench-gateway`, concorrência 64, 5 rodadas, 2000 POSTs cada):
+
+| gateway | POST/s | HTTP p50 | HTTP p95 | HTTP p99 | erros |
+|---|---|---|---|---|---|
+| gateway-go | 220 | 144 ms | 1075 ms | 1949 ms | 0 |
+| gateway-py | 156 | 236 ms | 1217 ms | 2138 ms | 0 |
+
+**Footprint** (`make bench-footprint`; bridge + worker contam juntas, imagem da bridge e do worker é a mesma):
+
+| worker | imagem (MB) | memória ociosa (MB) | 1º resultado após restart (s) |
+|---|---|---|---|
+| asyncio | 81 | 72 | 2.1 |
+| go | 14 | 9 | 0.4 |
+| celery | 184 | 265 | 4.2 |
+| taskiq | 169 | 177 | 2.8 |
+
+#### Leitura dos números
+
+- **Overhead:** o Go drena ~3,7 mil jobs/s usando ~10% de CPU; asyncio ~2 mil, TaskIQ ~1,3 mil e Celery ~750 (preso a 100% de CPU, com a bridge somada). O custo por mensagem do framework domina quando o handler não faz nada.
+- **CPU-bound:** com 1 CPU de teto, as quatro stacks ficam entre 19 e 27 jobs/s: o limite do container é o gargalo, não a linguagem. O `exec` p50 mostra outra coisa: Celery (4 processos, 4 jobs por vez) executa cada job em ~117 ms, enquanto asyncio, TaskIQ e Go rodam dezenas de jobs ao mesmo tempo e cada um leva segundos. Mesma vazão, perfis de latência bem diferentes.
+- **I/O-bound:** o Go (uma goroutine por URL) faz ~274 jobs/s com ~10% de CPU. asyncio e TaskIQ chegam a 60-70 (o `httpx` assíncrono custa CPU: 67-69% para uma fração do trabalho). O Celery fica em ~18 por desenho: `-c 4` processos = 4 jobs concorrentes, e cada job dura ~200 ms (4 / 0,216 s). A diferença vem da concorrência configurada e do modelo de execução, não de um erro de medição.
+- **Serialização:** Go ~159 jobs/s contra 60-70 das stacks Python, que empatam entre si.
+- **Footprint:** a imagem Go tem 14 MB e usa 9 MB ociosa; o Celery ocupa 265 MB só de ocioso (prefork de 4 processos + bridge). O Go também sobe e responde ao primeiro job em 0,4 s contra 2-4 s das stacks Python.
+- **Confiabilidade:** 0 falhas e 0 jobs perdidos em 80 rodadas (~34 mil jobs); duplicatas não existem por construção (chave `(job_id, worker)`).
+
+#### Limitações do v1
+
+- Uma máquina, Docker Desktop (macOS) com VM compartilhada: os valores absolutos mudam no Linux, e a dispersão é maior que numa máquina dedicada. O que vale é a ordem relativa.
+- Warm-up de um décimo dos jobs em vez de 30 s, e 200-1000 jobs por rodada: rodadas curtas (poucos segundos de drenagem).
+- Handlers CPU-bound com 64 jobs em voo no asyncio/TaskIQ/Go contra 4 no Celery são configurações **comparáveis em prefetch** (64) mas não em concorrência real; é o desenho de cada framework e está registrado em `docs/decisoes.md`.
+- Não medido ainda: RSS sob carga separado da memória máxima, tempo de recuperação e esforço (linhas de código/horas).
 
 ---
 
@@ -645,7 +730,7 @@ docker compose up --build gateway-go outbox-relay worker-go rabbitmq postgres
 | 3. Celery e TaskIQ | Dois workers com bridge | Os 4 workers respondem ao mesmo job |
 | 4. Workloads | `cpu.pbkdf2`, `io.fetch_urls`, `data.json_transform` implementados nos 4 workers | Resultados idênticos entre stacks |
 | 5. Observabilidade ✅ | OTel, Jaeger, Prometheus, Grafana, trace atravessando as linguagens | Um trace mostra gateway → worker |
-| 6. Benchmark base | CPU-bound, I/O-bound, footprint | Relatório v1 no README |
+| 6. Benchmark base ✅ | CPU-bound, I/O-bound, serialização, overhead, gateways, footprint | Relatório v1 no README |
 | 7. Cenários extras | Seção 7 (pico, falhas, free-threading, escala) | Relatório v2 |
 | 8. Opcional | Kubernetes (Helm/manifests), CI com GitHub Actions, worker Rust | À vontade |
 
