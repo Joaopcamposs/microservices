@@ -81,3 +81,18 @@ services:
       postgres: { condition: service_healthy }
     restart: unless-stopped
     profiles: [go, all]
+
+  # Worker Go (goroutines): consome jobs.go e grava job_results. Métricas em :9102/metrics.
+  worker-go:
+    build:
+      context: .
+      dockerfile: services/worker-go/Dockerfile
+    environment:
+      WORKER_DATABASE_URL: postgres://postgres:lab@postgres:5432/lab
+      WORKER_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+    ports: ["9102:9102"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    restart: unless-stopped
+    profiles: [go, all]

@@ -4,6 +4,16 @@ Registro da evolução do código, no formato [Keep a Changelog](https://keepach
 
 ## [Não lançado]
 
+### 2026-10-07 · Fase 2 (caminho Go): worker-go
+
+#### Adicionado
+- `services/worker-go` (amqp091, pgx): consome `jobs.go`, valida envelope e payload contra `contracts/`, executa o handler (`io.sleep`) e grava em `job_results` com worker `go`. Mesmas regras de entrega do worker-asyncio: ack só após gravar, inválida -> DLQ, falha de infra com um requeue e depois DLQ, handler que falha vira `failed`, gravação idempotente por `(job_id, worker)`.
+- Pool de goroutines lendo o mesmo canal de deliveries, com `WORKER_POOL_SIZE` igual ao prefetch (64) por padrão. Por quê: benchmark justo, já que o asyncio tem concorrência igual ao prefetch.
+- Graceful shutdown: cancela o consumer e espera o pool; o handler usa `context.WithoutCancel` para não gravar `failed` por causa do encerramento. Reconexão automática ao broker.
+- Métricas `worker_jobs_processed_total` e `worker_job_duration_seconds` em `:9102/metrics`, com os mesmos nomes do asyncio.
+- Testes: config, handler (inclusive cancelamento), processor com fakes (sucesso, falha, duplicata, inválidas, erro de infra), regra `Decide` de ack/reject/requeue e repositório contra o Postgres (pula sem banco).
+- `Dockerfile` (multi-stage, distroless), serviço `worker-go` no compose (profiles `go`, `all`, porta 9102); `make gofmt` e `make test` incluem o worker.
+
 ### 2026-10-07 · Fase 2 (caminho Go): gateway-go
 
 #### Adicionado

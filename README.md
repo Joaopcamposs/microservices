@@ -346,59 +346,23 @@ TaskIQ é async nativo. Use `taskiq worker app:broker --workers 2`.
 
 ### 5.4 worker-go (goroutines)
 
-```go
-// worker-go/main.go
-package main
+Código em `services/worker-go` (módulo `microservices-lab/worker-go`): `internal/rabbitmq/consumer.go` (`Consumer`: abre a sessão, sobe o pool de goroutines e aplica `Decide` ao ack/reject/requeue), `internal/service/job_processor.go` (`JobProcessor`: valida, executa o handler, grava o resultado), `internal/domain/` (`contracts.go` valida envelope e payload contra `contracts/`, `handlers.go` registra `tipo -> handler`), `internal/postgres/result_repository.go` (pgx), `internal/metrics` e `cmd/worker-go/main.go` (monta tudo e faz o graceful shutdown).
 
-import (
-	"encoding/json"
-	"log"
-	"sync"
+Mesmas regras de entrega da tabela do worker-asyncio (seção 5.3). O que muda é a concorrência: um canal AMQP com `Qos(prefetch=64)` alimenta um **pool de goroutines** que leem o mesmo canal de deliveries. O pool tem 64 goroutines por padrão (`WORKER_POOL_SIZE`, igual ao prefetch): com menos goroutines que mensagens entregues, um job I/O-bound esperaria vaga mesmo já tendo saído da fila, e a comparação com o asyncio (concorrência = prefetch) deixaria de ser justa. Goroutine custa poucos KB, então o pool grande é barato.
 
-	amqp "github.com/rabbitmq/amqp091-go"
-)
+Detalhes que valem o estudo:
 
-type Envelope struct {
-	JobID   string          `json:"job_id"`
-	Type    string          `json:"type"`
-	Payload json.RawMessage `json:"payload"`
-}
+- **Shutdown sem perder job em voo:** em SIGINT/SIGTERM o consumer é cancelado (`channel.Cancel`), o canal de deliveries fecha depois de entregar o que já veio e o `WaitGroup` espera o pool terminar. O handler roda com `context.WithoutCancel` de propósito: abortar no meio gravaria um `failed` causado só pelo encerramento.
+- **Reconexão:** se o broker cair, `Run` reabre a sessão após 1 s; a fila é declarada de forma passiva, como no asyncio.
+- **CPU-bound:** diferente do asyncio, o handler roda direto na goroutine e o scheduler do Go distribui entre os núcleos, sem `to_thread`.
+- **Contrato:** os schemas de `contracts/` são lidos por `santhosh-tekuri/jsonschema` (JSON Schema 2020-12), os mesmos arquivos de todas as stacks.
 
-func worker(id int, deliveries <-chan amqp.Delivery, wg *sync.WaitGroup) {
-	defer wg.Done()
-	for d := range deliveries {
-		var env Envelope
-		if err := json.Unmarshal(d.Body, &env); err != nil {
-			d.Nack(false, false) // sem requeue
-			continue
-		}
-		if err := handle(env); err != nil {
-			d.Nack(false, false)
-			continue
-		}
-		d.Ack(false)
-	}
-}
+Configuração por env `WORKER_*`: `DATABASE_URL`, `AMQP_URL`, `QUEUE` (`jobs.go`), `PREFETCH` (64), `POOL_SIZE` (= prefetch), `METRICS_ADDR` (`:9102`), `CONTRACTS_DIR`. Métricas em `:9102/metrics`, com os mesmos nomes do asyncio: `worker_jobs_processed_total{status}` e `worker_job_duration_seconds`.
 
-func main() {
-	conn, err := amqp.Dial("amqp://guest:guest@rabbitmq:5672/")
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer conn.Close()
-
-	ch, _ := conn.Channel()
-	ch.Qos(64, 0, false) // prefetch
-	deliveries, _ := ch.Consume("jobs.go", "", false, false, false, false, nil)
-
-	const poolSize = 8
-	var wg sync.WaitGroup
-	for i := 0; i < poolSize; i++ {
-		wg.Add(1)
-		go worker(i, deliveries, &wg)
-	}
-	wg.Wait()
-}
+```bash
+docker compose --profile go up -d --build worker-go
+curl -XPOST 'localhost:8001/jobs?type=io.sleep&target=go' -H 'content-type: application/json' -d '{"ms": 200}'
+cd services/worker-go && go test ./...
 ```
 
 Conceitos de Go que você pratica aqui: goroutines, channels, `sync.WaitGroup`, `context` para graceful shutdown, tratamento explícito de erros e struct tags.

@@ -1,5 +1,5 @@
 # Atalhos do projeto. Os de Python rodam em services/gateway-py e services/worker-asyncio (cada
-# serviço tem seu uv); os de Go, em services/outbox-relay e services/gateway-go.
+# serviço tem seu uv); os de Go, em services/outbox-relay, gateway-go e worker-go.
 
 
 # Sobe o gateway-py local com reload em :8000 (precisa de `make up` para Postgres/RabbitMQ).
@@ -15,6 +15,7 @@ ruff:
 gofmt:
 	cd services/outbox-relay && gofmt -w . && go vet ./...
 	cd services/gateway-go && gofmt -w . && go vet ./...
+	cd services/worker-go && gofmt -w . && go vet ./...
 
 # Sobe o gateway-go local em :8001 (Swagger em /swagger; precisa de `make up`).
 run-go:
@@ -30,6 +31,7 @@ test:
 	cd services/worker-asyncio && uv run pytest -x --tb=short -q
 	cd services/outbox-relay && go test ./...
 	cd services/gateway-go && go test ./...
+	cd services/worker-go && go test ./...
 
 # Sobe a infra (RabbitMQ e Postgres) e espera os healthchecks.
 up:
