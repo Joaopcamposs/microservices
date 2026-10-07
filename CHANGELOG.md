@@ -4,6 +4,21 @@ Registro da evolução do código, no formato [Keep a Changelog](https://keepach
 
 ## [Não lançado]
 
+### 2026-10-07 · Fase 1: outbox-relay (Go)
+
+#### Adicionado
+- `services/outbox-relay` (Go, `pgx`, `amqp091-go`, `slog`, Prometheus): lê a `outbox` com `FOR UPDATE SKIP LOCKED`, publica com publisher confirms e só então marca `published_at` e commita (at-least-once). Roteia `routing_key` vazia para o fanout `jobs` e as demais para `jobs.direct`.
+- Publicação com `mandatory=true`: mensagem sem rota é devolvida pelo broker e não conta como publicada, evitando perda silenciosa.
+- Purga periódica de linhas publicadas e métricas `outbox_pending`, `outbox_publish_lag_seconds`, `outbox_published_total`, `outbox_publish_errors_total` em `:9100/metrics`.
+- Testes: config, laço do relay com fakes, store contra o Postgres (publicação parcial, sem confirm, SKIP LOCKED, purga) e publisher contra o RabbitMQ (entrega intacta, sem rota). Integração pula sem infra.
+- `Dockerfile` (multi-stage, distroless), serviço `outbox-relay` no compose (profiles `python`, `go`, `all`) e target `make gofmt`; `make test` passa a rodar também os testes Go.
+
+#### Corrigido
+- `definitions.json` do RabbitMQ não definia usuários, então, ao carregar as definições, o `guest` deixava de existir e nenhum serviço conseguia conectar (403). Usuário e permissões agora fazem parte das definições.
+
+#### Alterado
+- README: relay descrito como implementado; o envelope é publicado sem reinterpretar, mas não idêntico byte a byte, pois o `jsonb` normaliza o texto.
+
 ### 2026-10-07 · Documentação do código (gateway-py)
 
 #### Alterado

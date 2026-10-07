@@ -202,7 +202,7 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-O envelope é gravado como JSON na coluna `outbox.envelope` e o relay o publica **byte a byte**, sem reinterpretar. Assim o contrato continua único e o relay não conhece os tipos de job.
+O envelope é gravado como JSON na coluna `outbox.envelope` e o relay o publica **sem reinterpretar** (o corpo da mensagem é o JSON da coluna; o `jsonb` normaliza espaços e ordem das chaves, então não é idêntico byte a byte ao que o gateway montou, só equivalente). Assim o contrato continua único e o relay não conhece os tipos de job.
 
 Trade-off: é artificial (um hop a mais), mas mantém o contrato único. A alternativa, o gateway Go publicar no formato nativo de cada framework, acopla o Go ao Celery e não vale a pena. Documente o hop extra como parte do resultado ao comparar latência.
 
@@ -280,6 +280,20 @@ Pontos que importam:
 - `ORDER BY id` preserva a ordem de inserção por relay, mas não há garantia de ordem global com múltiplas réplicas. Os jobs são independentes, então isso não importa aqui.
 - Limpeza: um job periódico apaga linhas com `published_at` antigo (ex.: > 1 h) para a tabela não crescer sem limite.
 - Métricas: `outbox_pending` (gauge), `outbox_publish_lag_seconds` (histograma de `published_at - created_at`) e `outbox_publish_errors_total`.
+
+Implementação em `services/outbox-relay` (Go, `pgx` + `amqp091-go`), em pacotes com dependências invertidas: `outbox` (laço, interfaces `Store`/`Publisher`), `postgres` (claim/mark/purge), `rabbitmq` (publisher com confirm), `config`, `metrics`.
+
+- **Mensagem sem rota é falha:** o publish usa `mandatory=true`; se nenhuma fila recebe a mensagem (ex.: `routing_key` desconhecida), o broker a devolve e o relay **não** a marca como publicada. Sem isso, o ack do broker esconderia a perda do job.
+- **Publicação parcial:** só os IDs confirmados são marcados e commitados; o resto continua pendente e é reenviado (duplicata possível, daí a idempotência dos workers).
+- **Reconexão:** o relay conecta ao RabbitMQ sob demanda e reconecta sozinho; broker fora do ar vira erro contado em `outbox_publish_errors_total`, com 1 s de espera entre tentativas.
+- **Configuração** (env): `RELAY_DATABASE_URL`, `RELAY_AMQP_URL`, `RELAY_POLL_INTERVAL` (50ms), `RELAY_BATCH_SIZE` (100, máx. 1000), `RELAY_RETENTION` (1h), `RELAY_PURGE_INTERVAL` (1m), `RELAY_METRICS_ADDR` (:9100).
+- **Observação:** `GET :9100/metrics` e `GET :9100/healthz`. Também `outbox_published_total`.
+
+```bash
+docker compose --profile python up -d --build outbox-relay   # sobe o relay
+curl localhost:9100/metrics | grep outbox_                   # pendentes, lag, erros
+cd services/outbox-relay && go test ./...                    # integração pula sem infra
+```
 
 Alternativa descartada: CDC com Debezium lendo o WAL. É mais robusto em escala, mas adiciona Kafka Connect/Debezium à infra, o que foge do foco do estudo. O polling é suficiente e mais simples de entender e medir. Fica como extensão opcional.
 

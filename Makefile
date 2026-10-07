@@ -1,4 +1,5 @@
-# Atalhos do projeto. Os de Python rodam dentro de services/gateway-py (cada serviço tem seu uv).
+# Atalhos do projeto. Os de Python rodam dentro de services/gateway-py (cada serviço tem seu uv);
+# os de Go, dentro de services/outbox-relay.
 
 # Sobe o gateway-py local com reload em :8000 (precisa de `make up` para Postgres/RabbitMQ).
 run:
@@ -8,9 +9,14 @@ run:
 ruff:
 	cd services/gateway-py && uv run ruff check . --fix && uv run ruff format .
 
-# Roda os testes; os de repositório usam o Postgres do compose e são pulados se ele estiver fora.
+# Formata e analisa o código Go do outbox-relay (gofmt reescreve, vet aponta problemas).
+gofmt:
+	cd services/outbox-relay && gofmt -w . && go vet ./...
+
+# Roda os testes; os de integração usam Postgres/RabbitMQ do compose e são pulados se estiverem fora.
 test:
 	cd services/gateway-py && uv run pytest -x --tb=short -q
+	cd services/outbox-relay && go test ./...
 
 # Sobe a infra (RabbitMQ e Postgres) e espera os healthchecks.
 up:

@@ -40,3 +40,16 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
     profiles: [python, all]
+
+  # Único publicador do RabbitMQ: lê a outbox e publica com confirm. Métricas em :9100/metrics.
+  outbox-relay:
+    build: ./services/outbox-relay
+    environment:
+      RELAY_DATABASE_URL: postgres://postgres:lab@postgres:5432/lab
+      RELAY_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+    ports: ["9100:9100"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    restart: unless-stopped
+    profiles: [python, go, all]
