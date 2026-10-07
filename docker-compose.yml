@@ -53,3 +53,31 @@ services:
       rabbitmq: { condition: service_healthy }
     restart: unless-stopped
     profiles: [python, go, all]
+
+  # Worker asyncio puro: consome jobs.asyncio e grava job_results. Métricas em :9101/metrics.
+  worker-asyncio:
+    build:
+      context: .
+      dockerfile: services/worker-asyncio/Dockerfile
+    environment:
+      WORKER_DATABASE_URL: postgresql://postgres:lab@postgres:5432/lab
+      WORKER_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+    ports: ["9101:9101"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    restart: unless-stopped
+    profiles: [python, all]
+
+  # API Gin com a mesma interface do gateway-py. Swagger em http://localhost:8001/swagger.
+  gateway-go:
+    build:
+      context: .
+      dockerfile: services/gateway-go/Dockerfile
+    environment:
+      GATEWAY_DATABASE_URL: postgres://postgres:lab@postgres:5432/lab
+    ports: ["8001:8001"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    restart: unless-stopped
+    profiles: [go, all]

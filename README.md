@@ -235,7 +235,22 @@ make test    # inclui integração com o Postgres; pula se o banco estiver fora
 
 ### 5.2 gateway-go (Gin)
 
-Mesma API, mesmo contrato, mesma transação `jobs` + `outbox`, comportamento idêntico. Esse é o teste de paridade: os dois gateways precisam ser intercambiáveis.
+Mesma API, mesmo contrato, mesma transação `jobs` + `outbox`, comportamento idêntico (inclusive `422` com `{"detail": ...}` e `404`). Esse é o teste de paridade: os dois gateways são intercambiáveis e escrevem no mesmo banco (um job criado em um aparece na listagem do outro). A diferença visível é `origin: "gateway-go"` no envelope.
+
+Código em `services/gateway-go`, em pacotes com dependências apontando para dentro: `internal/api` (handlers Gin e DTOs), `internal/service` (`JobService` e a interface `JobStore`), `internal/domain` (vocabulário do contrato, modelos, `PayloadValidator`, `traceparent`) e `internal/postgres` (SQL com `pgx`). O `main` monta tudo e faz graceful shutdown.
+
+**Swagger:** o Gin não gera documentação sozinho como o FastAPI. Usamos `swaggo/swag` + `gin-swagger`: as anotações `@Summary`, `@Param`, `@Success` nos handlers geram `docs/` (commitado) via `make swagger`, e a UI com "Try it out" sai em **http://localhost:8001/docs**, o mesmo endereço do gateway-py (`/swagger` redireciona para lá). Mudou handler, parâmetro ou resposta: rode `make swagger`. Trade-off: o spec é gerado a partir de comentários, não dos tipos, então pode divergir se esquecerem de regenerar (o teste `TestSwaggerIsServedAtDocs` só garante que ele é servido). A alternativa `huma` gera o OpenAPI dos tipos como o FastAPI, mas troca o Gin por outro framework e foge do objetivo de aprender Gin.
+
+A validação de payload usa `santhosh-tekuri/jsonschema` (JSON Schema 2020-12) sobre os mesmos arquivos de `contracts/jobs` do gateway-py.
+
+Configuração por env `GATEWAY_*`: `DATABASE_URL`, `ADDR` (`:8001`), `CONTRACTS_DIR`.
+
+```bash
+make run-go                  # go run em :8001 (precisa de make up)
+docker compose --profile go up -d --build gateway-go
+curl -XPOST 'localhost:8001/jobs?type=io.sleep&target=go' -d '{"ms": 100}'
+make swagger                 # regenera o Swagger após mudar a API (go tool swag, versão fixada no go.mod)
+```
 
 ### 5.2.1 outbox-relay
 
@@ -299,43 +314,24 @@ Alternativa descartada: CDC com Debezium lendo o WAL. É mais robusto em escala,
 
 ### 5.3 worker-asyncio (aio-pika puro)
 
-```python
-# worker-asyncio/main.py (Python 3.11+)
-import asyncio
-import json
-from datetime import UTC, datetime
+Código em `services/worker-asyncio/app`: `infra/consumer.py` (`QueueConsumer`, liga a fila ao caso de uso e decide ack/reject), `services/job_processor.py` (`JobProcessor`: valida, executa o handler, grava o resultado), `domain/` (`contracts.py` valida envelope e payload contra `contracts/`, `handlers.py` registra `tipo -> handler`), `infra/result_repository.py` (asyncpg) e `services/container.py` (`Services`, dono do pool, criado no `main`).
 
-import aio_pika
+Regras de entrega:
 
-from handlers import HANDLERS  # dict[str, Callable]
-from db import save_result
+| Situação | Reação | Por quê |
+|---|---|---|
+| Handler ok | grava `succeeded`, depois `ack` | o ack só vem **depois** do resultado gravado |
+| Handler lança exceção | grava `failed`, `ack` | reexecutar o mesmo erro não ajuda; o erro é resultado |
+| Mensagem inválida (JSON, envelope, payload, tipo sem handler) | `reject(requeue=False)` -> DLQ | nunca vai passar; sem requeue infinito |
+| Banco/infra fora | 1ª vez `requeue`, redelivery -> DLQ | cobre queda curta sem travar a fila |
+| Mesmo `job_id` duas vezes | `INSERT ... ON CONFLICT DO NOTHING`, conta `duplicate` | entrega at-least-once, resultado idempotente por `(job_id, worker)` |
 
+A fila é declarada de forma **passiva**: a topologia (inclusive dead-letter) vem só do `definitions.json`. Configuração por env `WORKER_*`: `DATABASE_URL`, `AMQP_URL`, `QUEUE` (`jobs.asyncio`), `PREFETCH` (64), `METRICS_PORT` (9101). Métricas em `:9101/metrics`: `worker_jobs_processed_total{status}` e `worker_job_duration_seconds`.
 
-async def handle(message: aio_pika.abc.AbstractIncomingMessage) -> None:
-    async with message.process(requeue=False):
-        envelope = json.loads(message.body)
-        started = datetime.now(UTC)
-        result = await HANDLERS[envelope["type"]](envelope["payload"])
-        await save_result(
-            job_id=envelope["job_id"],
-            worker="asyncio",
-            started_at=started,
-            finished_at=datetime.now(UTC),
-            result=result,
-        )
-
-
-async def main() -> None:
-    conn = await aio_pika.connect_robust("amqp://guest:guest@rabbitmq/")
-    channel = await conn.channel()
-    await channel.set_qos(prefetch_count=64)
-    queue = await channel.declare_queue("jobs.asyncio", durable=True)
-    await queue.consume(handle)
-    await asyncio.Future()  # roda para sempre
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+```bash
+docker compose --profile python up -d --build worker-asyncio
+curl -XPOST 'localhost:8000/jobs?type=io.sleep&target=asyncio' -H 'content-type: application/json' -d '{"ms": 200}'
+cd services/worker-asyncio && uv run pytest -x --tb=short -q
 ```
 
 Handlers CPU-bound devem usar `asyncio.to_thread` ou `ProcessPoolExecutor`, senão bloqueiam o event loop. Isso em si é uma lição do experimento.

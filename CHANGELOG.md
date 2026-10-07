@@ -4,6 +4,32 @@ Registro da evolução do código, no formato [Keep a Changelog](https://keepach
 
 ## [Não lançado]
 
+### 2026-10-07 · Fase 2 (caminho Go): gateway-go
+
+#### Adicionado
+- `services/gateway-go` (Gin, pgx): mesma API do gateway-py (`POST /jobs`, `GET /jobs`, `GET /jobs/{id}`, `GET /outbox`, `GET /healthz`, `/metrics`), mesma transação `jobs` + `outbox` e mesmos códigos e formato de erro (`422`/`404` com `{"detail": ...}`). Envelope com `origin: gateway-go`.
+- Swagger UI em `/docs` (mesmo endereço do gateway-py; `/swagger` redireciona) via `swaggo/swag` + `gin-swagger`; spec gerado em `docs/` com `make swagger`, que usa `go tool swag` (versão fixada no `go.mod`; um `go mod tidy` removia a dependência quando era só `go run`).
+- Validação de payload com JSON Schema 2020-12 sobre `contracts/jobs`, os mesmos arquivos do gateway-py.
+- Testes: validação contra os schemas reais, status derivado, envelope contra `envelope.schema.json`, códigos HTTP, Swagger servido e repositório contra o Postgres (atomicidade da outbox, resultados).
+- `Dockerfile` (multi-stage, distroless), serviço `gateway-go` no compose (profile `go`, porta 8001); targets `run-go` e `swagger`; `gofmt` e `test` incluem o gateway-go.
+
+#### Verificado
+- Job criado pelo gateway-go: outbox → relay → worker-asyncio → `completed`, e aparece em `GET /jobs` do gateway-py.
+
+### 2026-10-07 · Fase 1: worker-asyncio (fecha o caminho Python)
+
+#### Adicionado
+- `services/worker-asyncio` (aio-pika, asyncpg): consome `jobs.asyncio`, valida envelope e payload contra `contracts/`, executa o handler e grava em `job_results`. Primeiro handler: `io.sleep` com `asyncio.sleep`.
+- Ack explícito só após gravar o resultado; mensagem inválida vai para a DLQ; falha de infra tem uma segunda chance e depois vai para a DLQ; gravação idempotente por `(job_id, worker)`.
+- Falha de handler vira resultado `failed` (não reentrega).
+- Métricas `worker_jobs_processed_total` e `worker_job_duration_seconds` em `:9101/metrics`.
+- Testes: contrato, processor (sucesso, falha, duplicata, inválida), decisão de ack/reject e repositório contra o Postgres (pula sem banco).
+- `Dockerfile`, serviço `worker-asyncio` no compose (profiles `python`, `all`); `make ruff` e `make test` incluem o worker.
+
+#### Verificado
+- Critério da fase 1: com o RabbitMQ parado, `POST /jobs` responde `202`; ao voltar, o relay publica e o job completa.
+- 100 jobs `io.sleep` de 1 s terminam em poucos segundos (concorrência do event loop com prefetch 64).
+
 ### 2026-10-07 · Fase 1: outbox-relay (Go)
 
 #### Adicionado

@@ -53,7 +53,7 @@ Não force DDD onde o problema é simples. Onde fizer sentido, separe domínio (
 - **Outbox:** gateways nunca publicam direto no RabbitMQ. Gravam `jobs` + `outbox` na mesma transação; só o `outbox-relay` publica.
 - **Idempotência:** workers aceitam o mesmo `job_id` mais de uma vez (entrega at-least-once). Resultado gravado por `(job_id, worker)`.
 - **Ack explícito:** nunca confirmar a mensagem antes de gravar o resultado. Mensagem inválida vai para DLQ, sem requeue infinito.
-- **Consulta via Swagger:** todo serviço HTTP em FastAPI deve poder ser testado e inspecionado pelo `/docs`, sem curl: `summary`, `description`, `tags` e exemplos (`openapi_examples`) nos endpoints, e endpoints de consulta (listagem de jobs, inspeção da outbox) sempre que surgir estado novo que valha observar.
+- **Consulta via Swagger:** todo serviço HTTP deve poder ser testado e inspecionado pelo `/docs`, sem curl: `summary`, `description`, `tags` e exemplos (`openapi_examples`) nos endpoints, e endpoints de consulta (listagem de jobs, inspeção da outbox) sempre que surgir estado novo que valha observar. No Gin, o spec vem das anotações `swag`: mudou handler ou resposta, rode `make swagger` e commite `docs/`.
 - **Observabilidade:** propague o `traceparent` do envelope em todo hop.
 - **Benchmark justo:** limites de recurso, prefetch e concorrência iguais entre stacks e registrados. Handler CPU-bound nunca roda direto no event loop.
 - **Dependências por serviço:** cada serviço tem `pyproject.toml` (uv) ou `go.mod` e Dockerfile próprios; nada de dependência cruzada entre serviços além de `contracts/`.
