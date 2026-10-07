@@ -204,6 +204,8 @@ if __name__ == "__main__":
 
 O envelope é gravado como JSON na coluna `outbox.envelope` e o relay o publica **sem reinterpretar** (o corpo da mensagem é o JSON da coluna; o `jsonb` normaliza espaços e ordem das chaves, então não é idêntico byte a byte ao que o gateway montou, só equivalente). Assim o contrato continua único e o relay não conhece os tipos de job.
 
+Implementado em `services/worker-celery` e `services/worker-taskiq` (seções 5.3.1 e 5.3.2); o código acima é só a ideia, a versão real valida o contrato antes de entregar e usa `send_task`/`kiq`.
+
 Trade-off: é artificial (um hop a mais), mas mantém o contrato único. A alternativa, o gateway Go publicar no formato nativo de cada framework, acopla o Go ao Celery e não vale a pena. Documente o hop extra como parte do resultado ao comparar latência.
 
 ---
@@ -338,11 +340,47 @@ Handlers CPU-bound devem usar `asyncio.to_thread` ou `ProcessPoolExecutor`, sen�
 
 ### 5.3.1 worker-celery
 
-Celery com pool `prefork`, `-c 4`. Para I/O-bound, teste também `--pool=gevent` ou `threads` e registre a diferença.
+Código em `services/worker-celery/app`. Uma imagem, dois processos (dois serviços no compose):
+
+- **`celery-bridge`** (`python -m app.bridge_main`, métricas em `:9103`): `infra/bridge.py` (`Bridge`) lê `jobs.celery`, valida envelope e payload contra `contracts/`, entrega a task ao Celery por nome (`infra/celery_dispatcher.py`, `send_task` com `confirm_publish`) e só então dá `ack`.
+- **`worker-celery`** (`celery -A app.celery_app worker`): `celery_app.py` define a task `jobs.process`, que roda o `JobProcessor` e grava o resultado com worker `celery`. Pool `prefork`, `-c 4` (`WORKER_CONCURRENCY`).
+
+Regras de entrega (diferenças em relação ao asyncio/Go):
+
+| Situação | Reação | Por quê |
+|---|---|---|
+| Mensagem inválida ou tipo sem handler | a **bridge** faz `reject(requeue=False)` -> DLQ | nunca vai passar; não gasta uma task |
+| Broker do Celery recusa a task | bridge: 1ª vez `requeue`, redelivery -> DLQ | cobre queda curta, sem loop infinito |
+| Task entregue ao Celery | bridge dá `ack` da mensagem original | é ack de **entrega**: o resultado vem depois, idempotente por `(job_id, worker)` |
+| Handler lança exceção | task grava `failed` | reexecutar o mesmo erro não ajuda |
+| Banco fora na task | `autoretry_for=psycopg.OperationalError`, backoff, até 5x | `task_acks_late`: a mensagem só sai da fila do Celery depois de gravar |
+
+O ack da bridge não é "após gravar o resultado" como nos outros workers: o hop extra quebra essa regra de propósito, e o `task_acks_late` + `confirm_publish` + gravação idempotente fecham a lacuna (nenhuma etapa perde o job sem o broker saber). A fila interna do Celery (`celery.jobs`) é declarada pelo próprio Celery, fora do `definitions.json`.
+
+Prefetch justo: bridge com 64; no Celery, `-c 4` x `worker_prefetch_multiplier=16` = 64 em voo. Env `WORKER_*`: `DATABASE_URL`, `AMQP_URL`, `QUEUE` (`jobs.celery`), `CELERY_QUEUE` (`celery.jobs`), `PREFETCH` (64), `CONCURRENCY` (4), `METRICS_PORT` (9103). Métricas só da bridge (`bridge_messages_total{outcome}`); as do worker prefork entram na fase 5.
+
+`io.sleep` usa `time.sleep`: cada tarefa ocupa um processo filho, então a vazão I/O-bound fica limitada a `-c`. É o ponto do experimento; teste também `--pool=gevent` ou `threads` e registre a diferença.
+
+```bash
+docker compose --profile python up -d --build celery-bridge worker-celery
+curl -XPOST 'localhost:8001/jobs?type=io.sleep&target=celery' -H 'content-type: application/json' -d '{"ms": 200}'
+cd services/worker-celery && uv run pytest -x --tb=short -q
+```
 
 ### 5.3.2 worker-taskiq
 
-TaskIQ é async nativo. Use `taskiq worker app:broker --workers 2`.
+Código em `services/worker-taskiq/app`, mesma estrutura do Celery (bridge + worker, uma imagem, `taskiq-bridge` e `worker-taskiq` no compose):
+
+- **`taskiq-bridge`** (métricas em `:9104`): a mesma `Bridge`, com `infra/taskiq_dispatcher.py` fazendo `await task.kiq(...)`. Como o `kiq` é assíncrono, não precisa de thread (no Celery o `send_task` bloqueante roda em `asyncio.to_thread`).
+- **`worker-taskiq`** (`taskiq worker app.taskiq_app:broker --workers 2 --max-async-tasks 32`): `taskiq_app.py` usa `taskiq-aio-pika` (exchange e fila `taskiq.jobs`, fila clássica) e cria pool `asyncpg` + `JobProcessor` no evento `WORKER_STARTUP`, guardados no `state` do worker (sem global). `SimpleRetryMiddleware` repete a task quando o banco está fora.
+
+Prefetch justo: 2 processos x `qos=32` = 64 em voo. O handler `io.sleep` usa `asyncio.sleep`, como o worker asyncio. Env `WORKER_*`: `DATABASE_URL`, `AMQP_URL`, `QUEUE` (`jobs.taskiq`), `TASKIQ_QUEUE` (`taskiq.jobs`), `PREFETCH` (64), `WORKERS` (2, só para dividir o prefetch; mantenha igual ao `--workers`), `METRICS_PORT` (9104).
+
+```bash
+docker compose --profile python up -d --build taskiq-bridge worker-taskiq
+curl -XPOST 'localhost:8001/jobs?type=io.sleep&target=taskiq' -H 'content-type: application/json' -d '{"ms": 200}'
+cd services/worker-taskiq && uv run pytest -x --tb=short -q
+```
 
 ### 5.4 worker-go (goroutines)
 

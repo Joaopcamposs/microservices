@@ -1,5 +1,5 @@
-# Atalhos do projeto. Os de Python rodam em services/gateway-py e services/worker-asyncio (cada
-# serviço tem seu uv); os de Go, em services/outbox-relay, gateway-go e worker-go.
+# Atalhos do projeto. Os de Python rodam em services/gateway-py e nos workers asyncio, celery e
+# taskiq (cada serviço tem seu uv); os de Go, em services/outbox-relay, gateway-go e worker-go.
 
 
 # Sobe o gateway-py local com reload em :8000 (precisa de `make up` para Postgres/RabbitMQ).
@@ -10,6 +10,8 @@ run:
 ruff:
 	cd services/gateway-py && uv run ruff check . --fix && uv run ruff format .
 	cd services/worker-asyncio && uv run ruff check . --fix && uv run ruff format .
+	cd services/worker-celery && uv run ruff check . --fix && uv run ruff format .
+	cd services/worker-taskiq && uv run ruff check . --fix && uv run ruff format .
 
 # Formata e analisa o código Go do outbox-relay (gofmt reescreve, vet aponta problemas).
 gofmt:
@@ -29,6 +31,8 @@ swagger:
 test:
 	cd services/gateway-py && uv run pytest -x --tb=short -q
 	cd services/worker-asyncio && uv run pytest -x --tb=short -q
+	cd services/worker-celery && uv run pytest -x --tb=short -q
+	cd services/worker-taskiq && uv run pytest -x --tb=short -q
 	cd services/outbox-relay && go test ./...
 	cd services/gateway-go && go test ./...
 	cd services/worker-go && go test ./...

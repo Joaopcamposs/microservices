@@ -4,6 +4,25 @@ Registro da evolução do código, no formato [Keep a Changelog](https://keepach
 
 ## [Não lançado]
 
+### 2026-10-07 · Fase 3: worker-celery e worker-taskiq (bridge)
+
+#### Adicionado
+- `services/worker-celery`: bridge aio-pika (`jobs.celery`) + task Celery `jobs.process`. A bridge valida o contrato, entrega com `send_task` (`confirm_publish`) e só então dá `ack`; a task roda o `JobProcessor` e grava `job_results` (psycopg, pool por processo filho, idempotente). Prefork `-c 4`, `acks_late`, retry com backoff se o banco cair. Prefetch total 64 (`-c 4` x multiplicador 16).
+- `services/worker-taskiq`: mesma estrutura, com `taskiq-aio-pika` (fila clássica `taskiq.jobs`), asyncpg, 2 processos x `qos` 32 = 64 em voo, `SimpleRetryMiddleware`. Pool e processor criados no evento de startup, no `state` do worker.
+- Mensagem inválida ou tipo sem handler vai para a DLQ na bridge, antes de gastar uma task. Métricas `bridge_messages_total{outcome}` em `:9103` e `:9104`.
+- Testes por serviço: contrato, processor (sucesso, falha, duplicata, inválida), decisão de ack/reject/requeue da bridge e repositório contra o Postgres (pula sem banco).
+- `Dockerfile` por stack (uma imagem serve bridge e worker), quatro serviços no compose (profiles `python`, `all`); `make ruff` e `make test` incluem os dois.
+- `docs/decisoes.md` com o ADR da bridge.
+
+#### Alterado
+- O ack da bridge é de **entrega**, não de resultado: confirma a mensagem original depois de o broker do framework aceitar a task. Quebra a regra "ack só após gravar" de propósito; o ack tardio do framework e a gravação idempotente fecham a lacuna (ver ADR).
+
+#### Limitações conhecidas
+- O worker prefork do Celery e o worker do TaskIQ ainda não expõem métricas (modo multiprocess entra com a observabilidade, fase 5). Esgotadas as tentativas de retry por banco fora, a task falha só no log; o cenário é tratado na fase 7.
+
+#### Verificado
+- Critério da fase 3: um `POST` com `target=all` gera resultado `succeeded` dos 4 workers (`asyncio`, `celery`, `go`, `taskiq`) no mesmo job. 50 jobs `all` concorrentes completaram nos quatro; mensagem inválida em `jobs.celery` e `jobs.taskiq` foi para a DLQ.
+
 ### 2026-10-07 · Fase 2 (caminho Go): worker-go
 
 #### Adicionado

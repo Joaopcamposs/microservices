@@ -1,0 +1,1 @@
+"""Configuração e vocabulário fixo."""

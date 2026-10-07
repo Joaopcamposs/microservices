@@ -69,6 +69,66 @@ services:
     restart: unless-stopped
     profiles: [python, all]
 
+  # Bridge do Celery: lê o envelope de jobs.celery e entrega a task ao Celery. Métricas em :9103.
+  # Mesma imagem do worker-celery; só o comando muda.
+  celery-bridge:
+    build:
+      context: .
+      dockerfile: services/worker-celery/Dockerfile
+    command: ["python", "-m", "app.bridge_main"]
+    environment:
+      WORKER_DATABASE_URL: postgresql://postgres:lab@postgres:5432/lab
+      WORKER_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+    ports: ["9103:9103"]
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+    restart: unless-stopped
+    profiles: [python, all]
+
+  # Worker Celery (prefork, 4 processos): executa a task e grava job_results.
+  worker-celery:
+    build:
+      context: .
+      dockerfile: services/worker-celery/Dockerfile
+    environment:
+      WORKER_DATABASE_URL: postgresql://postgres:lab@postgres:5432/lab
+      WORKER_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    restart: unless-stopped
+    profiles: [python, all]
+
+  # Bridge do TaskIQ: lê o envelope de jobs.taskiq e entrega a task ao TaskIQ. Métricas em :9104.
+  # Mesma imagem do worker-taskiq; só o comando muda.
+  taskiq-bridge:
+    build:
+      context: .
+      dockerfile: services/worker-taskiq/Dockerfile
+    command: ["python", "-m", "app.bridge_main"]
+    environment:
+      WORKER_DATABASE_URL: postgresql://postgres:lab@postgres:5432/lab
+      WORKER_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+    ports: ["9104:9104"]
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+    restart: unless-stopped
+    profiles: [python, all]
+
+  # Worker TaskIQ (2 processos, 32 tasks async cada): executa a task e grava job_results.
+  worker-taskiq:
+    build:
+      context: .
+      dockerfile: services/worker-taskiq/Dockerfile
+    environment:
+      WORKER_DATABASE_URL: postgresql://postgres:lab@postgres:5432/lab
+      WORKER_AMQP_URL: amqp://guest:guest@rabbitmq:5672/
+    depends_on:
+      postgres: { condition: service_healthy }
+      rabbitmq: { condition: service_healthy }
+    restart: unless-stopped
+    profiles: [python, all]
+
   # API Gin com a mesma interface do gateway-py. Swagger em http://localhost:8001/swagger.
   gateway-go:
     build:
